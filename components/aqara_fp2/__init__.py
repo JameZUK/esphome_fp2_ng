@@ -124,6 +124,7 @@ def parse_ascii_grid(value):
         grid_data[out_r * 2 + 1] = row_val & 0xFF
 
     gd = list(grid_data)
+    print(gd)
     return gd
 
 
@@ -262,6 +263,8 @@ async def to_code(config):
             }
             zones_data.append(zone_data)
         map_config_data["zones"] = zones_data
+
+    print(map_config_data)
 
     # Store as JSON string constant
     map_config_json = json.dumps(map_config_data, separators=(",", ":"))

@@ -727,31 +727,17 @@ void FP2TextSensor::setup() {
 
 std::string FP2Component::grid_to_hex_card_format(const GridMap &grid) {
   std::string result;
-  result.reserve(56);  // 14 rows * 4 hex chars
+  result.reserve(56);  // 14 rows * 2 bytes * 2 hex chars
 
   // For each row R (0-13) in the card format
   for (int R = 0; R < 14; R++) {
     // Map to internal row (rows 3-16 in the 20-row grid)
-    int internal_row_idx = R + 3;
+    int internal_row_idx = R;
+    int byte_idx = internal_row_idx * 2;
 
-    // Read 16-bit row value (big endian)
-    uint16_t internal_row = (grid[internal_row_idx * 2] << 8) |
-                            grid[internal_row_idx * 2 + 1];
-
-    // Convert: internal uses bit 14 for col 1, card uses bit 0 for col 0
-    // Internal cols 1-14 map to card cols 0-13
-    uint16_t card_row = 0;
-    for (int c = 0; c < 14; c++) {
-      // Check if internal col (c+1) is set: bit position (15 - (c+1)) = (14 - c)
-      if (internal_row & (1 << (14 - c))) {
-        // Set card col c: bit position c
-        card_row |= (1 << c);
-      }
-    }
-
-    // Append as 4 hex chars (lowercase)
+    // Encode the 2 bytes for this row as 4 hex chars
     char hex[5];
-    snprintf(hex, sizeof(hex), "%04x", card_row);
+    snprintf(hex, sizeof(hex), "%02x%02x", grid[byte_idx], grid[byte_idx + 1]);
     result += hex;
   }
 
