@@ -135,7 +135,14 @@
         <script>
             // Mock Home Assistant API and data
             let mockHassStates = {};
+            let mockHassDevices = {};
+            let mockHassEntities = {};
             let animationInterval = null;
+
+            // Device and entity IDs
+            const MAIN_DEVICE_ID = "fp2_test_main_device";
+            const ZONE1_DEVICE_ID = "fp2_test_zone_1_device";
+            const ZONE2_DEVICE_ID = "fp2_test_zone_2_device";
 
             // Helper to create a grid hex bitmap string (14 rows × 4 hex chars = 56 chars)
             // Each row is represented by 4 hex characters (2 bytes), with the 14 LSBs indicating cell states
@@ -159,6 +166,29 @@
             function initMockEntities() {
                 const prefix = "sensor.fp2_test";
 
+                // --- Device Registry Setup ---
+                // Main FP2 device
+                mockHassDevices[MAIN_DEVICE_ID] = {
+                    id: MAIN_DEVICE_ID,
+                    name: "Test FP2 Sensor",
+                    model: "Aqara FP2",
+                    manufacturer: "Aqara",
+                };
+
+                // Zone 1 sub-device
+                mockHassDevices[ZONE1_DEVICE_ID] = {
+                    id: ZONE1_DEVICE_ID,
+                    name: "Zone 1 - Living Area",
+                    via_device_id: MAIN_DEVICE_ID,
+                };
+
+                // Zone 2 sub-device
+                mockHassDevices[ZONE2_DEVICE_ID] = {
+                    id: ZONE2_DEVICE_ID,
+                    name: "Zone 2 - Desk Area",
+                    via_device_id: MAIN_DEVICE_ID,
+                };
+
                 // --- Static Zone Definitions (Global Text Sensors) ---
                 // These are global zones that define the sensor's static configuration
 
@@ -169,6 +199,10 @@
                     }),
                     attributes: {},
                 };
+                mockHassEntities[`${prefix}_edge_label_grid`] = {
+                    entity_id: `${prefix}_edge_label_grid`,
+                    device_id: MAIN_DEVICE_ID,
+                };
 
                 // Entry/exit zone grid - marks cells designated as entry/exit areas
                 mockHassStates[`${prefix}_entry_exit_grid`] = {
@@ -176,6 +210,10 @@
                         return x === 7 && y === 1; // Door at top center
                     }),
                     attributes: {},
+                };
+                mockHassEntities[`${prefix}_entry_exit_grid`] = {
+                    entity_id: `${prefix}_entry_exit_grid`,
+                    device_id: MAIN_DEVICE_ID,
                 };
 
                 // Interference source grid - marks cells with known interference sources
@@ -185,41 +223,75 @@
                     }),
                     attributes: {},
                 };
+                mockHassEntities[`${prefix}_interference_grid`] = {
+                    entity_id: `${prefix}_interference_grid`,
+                    device_id: MAIN_DEVICE_ID,
+                };
 
                 // --- Detection Zones (Sub-Devices) ---
                 // Each zone is registered as a sub-device (via_device_id points to main FP2 device)
                 // Each zone sub-device has: map, occupancy state, and motion sensors
 
                 // Zone 1 - Living area (4x4 zone)
-                mockHassStates[`${prefix}_zone_1_map`] = {
+                const zone1Prefix = `${prefix}_zone_1`;
+                mockHassStates[`${zone1Prefix}_map`] = {
                     state: createGrid((x, y) => {
                         return x >= 3 && x <= 6 && y >= 3 && y <= 6;
                     }),
                     attributes: {},
                 };
-                mockHassStates[`${prefix}_zone_1_occupancy`] = {
+                mockHassEntities[`${zone1Prefix}_map`] = {
+                    entity_id: `${zone1Prefix}_map`,
+                    device_id: ZONE1_DEVICE_ID,
+                };
+
+                mockHassStates[`${zone1Prefix}_occupancy`] = {
                     state: "off",
                     attributes: {},
                 };
-                mockHassStates[`${prefix}_zone_1_motion`] = {
+                mockHassEntities[`${zone1Prefix}_occupancy`] = {
+                    entity_id: `${zone1Prefix}_occupancy`,
+                    device_id: ZONE1_DEVICE_ID,
+                };
+
+                mockHassStates[`${zone1Prefix}_motion`] = {
                     state: "none",
                     attributes: {},
                 };
+                mockHassEntities[`${zone1Prefix}_motion`] = {
+                    entity_id: `${zone1Prefix}_motion`,
+                    device_id: ZONE1_DEVICE_ID,
+                };
 
                 // Zone 2 - Desk area (3x3 zone)
-                mockHassStates[`${prefix}_zone_2_map`] = {
+                const zone2Prefix = `${prefix}_zone_2`;
+                mockHassStates[`${zone2Prefix}_map`] = {
                     state: createGrid((x, y) => {
                         return x >= 8 && x <= 10 && y >= 5 && y <= 7;
                     }),
                     attributes: {},
                 };
-                mockHassStates[`${prefix}_zone_2_occupancy`] = {
+                mockHassEntities[`${zone2Prefix}_map`] = {
+                    entity_id: `${zone2Prefix}_map`,
+                    device_id: ZONE2_DEVICE_ID,
+                };
+
+                mockHassStates[`${zone2Prefix}_occupancy`] = {
                     state: "off",
                     attributes: {},
                 };
-                mockHassStates[`${prefix}_zone_2_motion`] = {
+                mockHassEntities[`${zone2Prefix}_occupancy`] = {
+                    entity_id: `${zone2Prefix}_occupancy`,
+                    device_id: ZONE2_DEVICE_ID,
+                };
+
+                mockHassStates[`${zone2Prefix}_motion`] = {
                     state: "none",
                     attributes: {},
+                };
+                mockHassEntities[`${zone2Prefix}_motion`] = {
+                    entity_id: `${zone2Prefix}_motion`,
+                    device_id: ZONE2_DEVICE_ID,
                 };
 
                 // --- Full Location Data Sensor ---
@@ -229,11 +301,17 @@
                     state: JSON.stringify([]),
                     attributes: {},
                 };
+                mockHassEntities[`${prefix}_targets`] = {
+                    entity_id: `${prefix}_targets`,
+                    device_id: MAIN_DEVICE_ID,
+                };
             }
 
             // Mock Home Assistant object
             const mockHass = {
                 states: mockHassStates,
+                devices: mockHassDevices,
+                entities: mockHassEntities,
                 callService: function (domain, service, data) {
                     console.log("Mock service call:", domain, service, data);
                 },
@@ -242,11 +320,12 @@
             // Test control functions
             function toggleZoneOccupancy(zoneId) {
                 const prefix = "sensor.fp2_test";
-                const entity =
-                    mockHassStates[`${prefix}_zone_${zoneId}_occupancy`];
-                entity.state =
-                    entity.state === "on" ? "off" : "on";
-                updateCard();
+                const zonePrefix = `${prefix}_zone_${zoneId}`;
+                const entity = mockHassStates[`${zonePrefix}_occupancy`];
+                if (entity) {
+                    entity.state = entity.state === "on" ? "off" : "on";
+                    updateCard();
+                }
             }
 
             function addRandomTarget() {
@@ -254,12 +333,14 @@
                 const targetsEntity = mockHassStates[`${prefix}_targets`];
                 const targets = JSON.parse(targetsEntity.state);
 
+                // Positions are in fixed-point format (1/100 scale)
+                // Grid positions 2-12, so 200-1200 in fixed-point
                 const newTarget = {
                     id: targets.length + 1,
-                    x: 2 + Math.random() * 10,
-                    y: 2 + Math.random() * 10,
-                    velocity_x: (Math.random() - 0.5) * 2,
-                    velocity_y: (Math.random() - 0.5) * 2,
+                    x: Math.round((2 + Math.random() * 10) * 100),
+                    y: Math.round((2 + Math.random() * 10) * 100),
+                    velocity_x: Math.round((Math.random() - 0.5) * 200),
+                    velocity_y: Math.round((Math.random() - 0.5) * 200),
                 };
 
                 targets.push(newTarget);
@@ -303,19 +384,21 @@
                         const targets = JSON.parse(targetsEntity.state);
 
                         // Move targets based on velocity
+                        // Positions and velocities are in fixed-point format (1/100 scale)
                         targets.forEach((target) => {
-                            target.x += target.velocity_x * 0.1;
-                            target.y += target.velocity_y * 0.1;
+                            target.x += Math.round(target.velocity_x * 0.1);
+                            target.y += Math.round(target.velocity_y * 0.1);
 
                             // Bounce off edges (considering edge labels)
-                            if (target.x < 2 || target.x > 12)
+                            // Grid boundaries are 2-12, so 200-1200 in fixed-point
+                            if (target.x < 200 || target.x > 1200)
                                 target.velocity_x *= -1;
-                            if (target.y < 2 || target.y > 12)
+                            if (target.y < 200 || target.y > 1200)
                                 target.velocity_y *= -1;
 
                             // Clamp position
-                            target.x = Math.max(2, Math.min(12, target.x));
-                            target.y = Math.max(2, Math.min(12, target.y));
+                            target.x = Math.max(200, Math.min(1200, target.x));
+                            target.y = Math.max(200, Math.min(1200, target.y));
                         });
 
                         targetsEntity.state = JSON.stringify(targets);
@@ -342,6 +425,10 @@
                     show_sensor_position: true,
                     show_zone_labels: true,
                     mounting_position: "wall",
+                    // Position conversion settings (for debugging if values don't match):
+                    // position_scale: 0.01,    // Default: 0.01 (1/100 fixed-point)
+                    // position_bias_x: 0,      // Default: 0 (no X offset)
+                    // position_bias_y: 0,      // Default: 0 (no Y offset)
                 });
 
                 card.hass = mockHass;

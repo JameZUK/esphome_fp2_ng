@@ -1,3 +1,18 @@
+/**
+ * Aqara FP2 Presence Sensor Card for Home Assistant
+ *
+ * Configuration options:
+ * - entity_prefix: (required) The entity prefix for the FP2 sensor (e.g., "sensor.fp2_living_room")
+ * - title: (optional) Card title
+ * - display_mode: (optional) "full" or "zoomed" - Default: "full"
+ * - show_grid: (optional) Show grid lines - Default: true
+ * - show_sensor_position: (optional) Show sensor position marker - Default: true
+ * - show_zone_labels: (optional) Show zone labels - Default: true
+ * - mounting_position: (optional) Sensor mounting position - Default: from entity or "wall"
+ * - position_scale: (optional) Scale factor for target positions - Default: 0.01 (1/100 fixed-point)
+ * - position_bias_x: (optional) X offset to add to target positions after scaling - Default: 0
+ * - position_bias_y: (optional) Y offset to add to target positions after scaling - Default: 0
+ */
 class AqaraFP2Card extends HTMLElement {
   constructor() {
     super();
@@ -161,6 +176,61 @@ class AqaraFP2Card extends HTMLElement {
       }
     };
 
+    // Helper to get main device ID from an entity
+    const getMainDeviceId = () => {
+      // Try to find the main device by looking up one of the known entities
+      const testEntity = `${prefix}_edge_label_grid`;
+      if (hass.entities && hass.entities[testEntity]) {
+        const deviceId = hass.entities[testEntity].device_id;
+        console.log(`[FP2 Card] ✓ Found main device ID: ${deviceId}`);
+        return deviceId;
+      }
+      console.warn(`[FP2 Card] ✗ Could not find main device (entity registry not available or entity not found)`);
+      return null;
+    };
+
+    // Helper to find zone sub-devices
+    const findZoneSubDevices = (mainDeviceId) => {
+      if (!hass.devices || !hass.entities) {
+        console.warn(`[FP2 Card] ✗ Device/Entity registry not available`);
+        return [];
+      }
+
+      const subDevices = [];
+
+      // Find all devices that have via_device_id pointing to main device
+      Object.entries(hass.devices).forEach(([deviceId, device]) => {
+        if (device.via_device_id === mainDeviceId) {
+          console.log(`[FP2 Card] ✓ Found sub-device: ${deviceId} (${device.name || 'unnamed'})`);
+          subDevices.push({ deviceId, device });
+        }
+      });
+
+      console.log(`[FP2 Card] Total sub-devices found: ${subDevices.length}`);
+      return subDevices;
+    };
+
+    // Helper to extract entity prefix from a device's entities
+    const getDeviceEntityPrefix = (deviceId) => {
+      // Find all entities for this device
+      const deviceEntities = Object.entries(hass.entities)
+        .filter(([entityId, entity]) => entity.device_id === deviceId)
+        .map(([entityId, entity]) => entityId);
+
+      // Look for a _map entity to determine the prefix
+      const mapEntity = deviceEntities.find(id => id.endsWith('_map'));
+      if (mapEntity) {
+        // Extract prefix by removing the _map suffix and the zone identifier
+        // Format: {prefix}_zone_{id}_map -> we want {prefix}_zone_{id}
+        const prefix = mapEntity.replace(/_map$/, '');
+        console.log(`[FP2 Card] ✓ Extracted prefix for device ${deviceId}: ${prefix}`);
+        return prefix;
+      }
+
+      console.warn(`[FP2 Card] ✗ Could not determine prefix for device ${deviceId}`);
+      return null;
+    };
+
     // Helper to parse grid from hex bitmap string (14 rows × 4 hex chars = 56 chars)
     // Each row is represented by 4 hex characters (2 bytes), with the 14 LSBs indicating cell states
     const parseGrid = (gridString, gridName = "unknown") => {
@@ -214,34 +284,47 @@ class AqaraFP2Card extends HTMLElement {
     // --- Detection Zones (Sub-Devices) ---
     // Each zone is registered as a sub-device (via_device_id points to main FP2 device)
     // Each zone sub-device has: map, occupancy state, and motion sensors
-    // Discover zones dynamically by scanning for zone_X_map entities
-    console.log(`[FP2 Card] Discovering zones with prefix "${prefix}_zone_"...`);
+    console.log(`[FP2 Card] Discovering zones via device registry...`);
     const zones = [];
-    Object.keys(hass.states).forEach((entityId) => {
-      // Look for zone map entities (format: {prefix}_zone_{id}_map)
-      // Supports both numeric IDs (zone_1_map) and custom identifiers (zone_sofa_zone_map)
-      if (entityId.startsWith(`${prefix}_zone_`) && entityId.endsWith("_map")) {
-        const zoneIdMatch = entityId.match(/_zone_(.+)_map$/);
-        if (zoneIdMatch) {
-          const zoneId = zoneIdMatch[1];
-          console.log(`[FP2 Card] Found zone: ${zoneId}`);
-          const zoneMap = parseGrid(getEntityState(entityId), `zone_${zoneId}_map`);
-          const occupancyEntity = `${prefix}_zone_${zoneId}_occupancy`;
-          const motionEntity = `${prefix}_zone_${zoneId}_motion`;
 
-          const occupancyState = getEntityState(occupancyEntity);
-          const motionState = getEntityState(motionEntity);
+    const mainDeviceId = getMainDeviceId();
+    if (mainDeviceId) {
+      const subDevices = findZoneSubDevices(mainDeviceId);
 
-          zones.push({
-            id: zoneId,
-            map: zoneMap,
-            occupancy: occupancyState === "on",
-            motion: motionState,
-          });
-          console.log(`[FP2 Card] ✓ Zone ${zoneId}: occupancy=${occupancyState}, motion=${motionState}`);
+      subDevices.forEach(({ deviceId, device }) => {
+        const zonePrefix = getDeviceEntityPrefix(deviceId);
+        if (!zonePrefix) return;
+
+        // Extract zone ID from prefix (format: {prefix}_zone_{id})
+        const zoneIdMatch = zonePrefix.match(/_zone_(.+)$/);
+        if (!zoneIdMatch) {
+          console.warn(`[FP2 Card] ✗ Could not extract zone ID from prefix: ${zonePrefix}`);
+          return;
         }
-      }
-    });
+
+        const zoneId = zoneIdMatch[1];
+        console.log(`[FP2 Card] Processing zone: ${zoneId} (prefix: ${zonePrefix})`);
+
+        const mapEntity = `${zonePrefix}_map`;
+        const occupancyEntity = `${zonePrefix}_occupancy`;
+        const motionEntity = `${zonePrefix}_motion`;
+
+        const zoneMap = parseGrid(getEntityState(mapEntity), `zone_${zoneId}_map`);
+        const occupancyState = getEntityState(occupancyEntity);
+        const motionState = getEntityState(motionEntity);
+
+        zones.push({
+          id: zoneId,
+          map: zoneMap,
+          occupancy: occupancyState === "on",
+          motion: motionState,
+        });
+        console.log(`[FP2 Card] ✓ Zone ${zoneId}: occupancy=${occupancyState}, motion=${motionState}`);
+      });
+    } else {
+      console.warn(`[FP2 Card] ✗ Could not find main device, zones will not be loaded`);
+    }
+
     console.log(`[FP2 Card] Total zones discovered: ${zones.length}`);
 
     // --- Full Location Data Sensor ---
@@ -522,9 +605,16 @@ class AqaraFP2Card extends HTMLElement {
   drawTargets(data, minX, maxX, minY, maxY, cellSize) {
     if (!data.targets || !Array.isArray(data.targets)) return;
 
+    // Get position scale and bias from config (defaults: scale=0.01, bias=0)
+    const positionScale = this.config.position_scale !== undefined ? this.config.position_scale : 0.01;
+    const positionBiasX = this.config.position_bias_x !== undefined ? this.config.position_bias_x : 0;
+    const positionBiasY = this.config.position_bias_y !== undefined ? this.config.position_bias_y : 0;
+
     data.targets.forEach((target) => {
-      const x = target.x;
-      const y = target.y;
+      // Target positions are in fixed-point format (default 1/100 scale)
+      // Convert from fixed-point to grid coordinates using scale and bias
+      const x = target.x * positionScale + positionBiasX;
+      const y = target.y * positionScale + positionBiasY;
 
       // Check if target is in visible range
       if (x < minX || x > maxX || y < minY || y > maxY) return;
@@ -552,8 +642,9 @@ class AqaraFP2Card extends HTMLElement {
 
       // Draw velocity vector if available
       if (target.velocity_x !== undefined && target.velocity_y !== undefined) {
-        const vx = target.velocity_x;
-        const vy = target.velocity_y;
+        // Velocity is also in fixed-point format (use same scale)
+        const vx = target.velocity_x * positionScale;
+        const vy = target.velocity_y * positionScale;
         const magnitude = Math.sqrt(vx * vx + vy * vy);
 
         if (magnitude > 0.1) {
