@@ -28,6 +28,7 @@ class AqaraFP2Card extends HTMLElement {
     this.showGrid = config.show_grid !== false;
     this.showSensorPosition = config.show_sensor_position !== false;
     this.showZoneLabels = config.show_zone_labels !== false;
+    console.log(`[FP2 Card] Card configured with entity_prefix: ${config.entity_prefix}`);
   }
 
   initializeCard() {
@@ -114,8 +115,12 @@ class AqaraFP2Card extends HTMLElement {
   }
 
   updateCard() {
-    if (!this._hass || !this.canvas) return;
+    if (!this._hass || !this.canvas) {
+      console.log(`[FP2 Card] updateCard skipped: hass=${!!this._hass}, canvas=${!!this.canvas}`);
+      return;
+    }
 
+    console.log(`[FP2 Card] ===== Card update triggered =====`);
     const data = this.gatherEntityData();
     this.renderCanvas(data);
     this.updateInfoPanel(data);
@@ -125,27 +130,48 @@ class AqaraFP2Card extends HTMLElement {
     const prefix = this.config.entity_prefix;
     const hass = this._hass;
 
+    console.log(`[FP2 Card] Starting entity data gathering with prefix: ${prefix}`);
+
     // Helper to safely get entity state
     const getEntityState = (entityId) => {
       const state = hass.states[entityId];
-      return state ? state.state : null;
+      if (state) {
+        console.log(`[FP2 Card] ✓ Entity found: ${entityId} = "${state.state}"`);
+        return state.state;
+      } else {
+        console.warn(`[FP2 Card] ✗ Entity not found: ${entityId}`);
+        return null;
+      }
     };
 
     // Helper to parse JSON attributes
     const getJsonAttribute = (entityId) => {
       const state = hass.states[entityId];
-      if (!state) return null;
+      if (!state) {
+        console.warn(`[FP2 Card] ✗ JSON entity not found: ${entityId}`);
+        return null;
+      }
       try {
-        return JSON.parse(state.state);
+        const parsed = JSON.parse(state.state);
+        console.log(`[FP2 Card] ✓ JSON entity parsed: ${entityId}`, parsed);
+        return parsed;
       } catch (e) {
+        console.error(`[FP2 Card] ✗ JSON parse error for ${entityId}:`, e.message, `Raw value: "${state.state}"`);
         return null;
       }
     };
 
     // Helper to parse grid from hex bitmap string (14 rows × 4 hex chars = 56 chars)
     // Each row is represented by 4 hex characters (2 bytes), with the 14 LSBs indicating cell states
-    const parseGrid = (gridString) => {
-      if (!gridString || gridString.length !== 56) {
+    const parseGrid = (gridString, gridName = "unknown") => {
+      if (!gridString) {
+        console.warn(`[FP2 Card] Grid "${gridName}" is null/undefined, using empty grid`);
+        return Array(14)
+          .fill(null)
+          .map(() => Array(14).fill(0));
+      }
+      if (gridString.length !== 56) {
+        console.warn(`[FP2 Card] Grid "${gridName}" has invalid length ${gridString.length} (expected 56), using empty grid`);
         return Array(14)
           .fill(null)
           .map(() => Array(14).fill(0));
@@ -162,19 +188,24 @@ class AqaraFP2Card extends HTMLElement {
           grid[y][x] = (rowBits >> x) & 1;
         }
       }
+      console.log(`[FP2 Card] ✓ Grid "${gridName}" parsed successfully`);
       return grid;
     };
 
     // --- Static Zone Definitions (Global Text Sensors) ---
     // These are global zones that define the sensor's static configuration
+    console.log(`[FP2 Card] Loading static grid definitions...`);
     const edgeLabelGrid = parseGrid(
       getEntityState(`${prefix}_edge_label_grid`),
+      "edge_label_grid"
     );
     const entryExitGrid = parseGrid(
       getEntityState(`${prefix}_entry_exit_grid`),
+      "entry_exit_grid"
     );
     const interferenceGrid = parseGrid(
       getEntityState(`${prefix}_interference_grid`),
+      "interference_grid"
     );
 
     // Get mounting position (from config or attribute)
@@ -184,6 +215,7 @@ class AqaraFP2Card extends HTMLElement {
     // Each zone is registered as a sub-device (via_device_id points to main FP2 device)
     // Each zone sub-device has: map, occupancy state, and motion sensors
     // Discover zones dynamically by scanning for zone_X_map entities
+    console.log(`[FP2 Card] Discovering zones with prefix "${prefix}_zone_"...`);
     const zones = [];
     Object.keys(hass.states).forEach((entityId) => {
       // Look for zone map entities (format: {prefix}_zone_{id}_map)
@@ -192,26 +224,35 @@ class AqaraFP2Card extends HTMLElement {
         const zoneIdMatch = entityId.match(/_zone_(.+)_map$/);
         if (zoneIdMatch) {
           const zoneId = zoneIdMatch[1];
-          const zoneMap = parseGrid(getEntityState(entityId));
+          console.log(`[FP2 Card] Found zone: ${zoneId}`);
+          const zoneMap = parseGrid(getEntityState(entityId), `zone_${zoneId}_map`);
           const occupancyEntity = `${prefix}_zone_${zoneId}_occupancy`;
           const motionEntity = `${prefix}_zone_${zoneId}_motion`;
+
+          const occupancyState = getEntityState(occupancyEntity);
+          const motionState = getEntityState(motionEntity);
 
           zones.push({
             id: zoneId,
             map: zoneMap,
-            occupancy: getEntityState(occupancyEntity) === "on",
-            motion: getEntityState(motionEntity),
+            occupancy: occupancyState === "on",
+            motion: motionState,
           });
+          console.log(`[FP2 Card] ✓ Zone ${zoneId}: occupancy=${occupancyState}, motion=${motionState}`);
         }
       }
     });
+    console.log(`[FP2 Card] Total zones discovered: ${zones.length}`);
 
     // --- Full Location Data Sensor ---
     // Text sensor containing JSON array with all target locations
     // Format: [{ id, x, y, velocity_x, velocity_y }, ...]
+    console.log(`[FP2 Card] Loading target data...`);
     const targetData = getJsonAttribute(`${prefix}_targets`);
+    const targetCount = targetData ? targetData.length : 0;
+    console.log(`[FP2 Card] Total targets: ${targetCount}`);
 
-    return {
+    const result = {
       edgeLabelGrid,
       entryExitGrid,
       interferenceGrid,
@@ -219,6 +260,11 @@ class AqaraFP2Card extends HTMLElement {
       zones,
       targets: targetData || [],
     };
+
+    console.log(`[FP2 Card] ===== Entity gathering complete =====`);
+    console.log(`[FP2 Card] Summary: ${zones.length} zones, ${targetCount} targets, mounting: ${mountingPosition}`);
+
+    return result;
   }
 
   renderCanvas(data) {
