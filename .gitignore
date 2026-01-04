@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+.esphome
+test_fp2_configuration.yaml
+
+FIX_COMPONENT_ENTITY_SPEC_DEVLOG.md
+FP2_CARD_README.md
+FP2_SENSOR_HASS_TARGET_STATE.md
+IMPLEMENTATION_SUMMARY.md
+VISUAL_MAP.md

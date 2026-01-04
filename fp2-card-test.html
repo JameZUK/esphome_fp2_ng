@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Aqara FP2 Card Test</title>
+        <style>
+            :root {
+                --primary-color: #03a9f4;
+                --text-primary-color: #ffffff;
+                --primary-text-color: #212121;
+                --secondary-text-color: #727272;
+                --divider-color: #e0e0e0;
+                --card-background-color: #ffffff;
+                --secondary-background-color: #f5f5f5;
+            }
+
+            body {
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    sans-serif;
+                background: #f0f0f0;
+                padding: 20px;
+                margin: 0;
+            }
+
+            .container {
+                max-width: 800px;
+                margin: 0 auto;
+            }
+
+            .test-controls {
+                background: white;
+                padding: 20px;
+                margin-bottom: 20px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            }
+
+            .test-controls h2 {
+                margin-top: 0;
+            }
+
+            .control-group {
+                margin-bottom: 15px;
+            }
+
+            .control-group label {
+                display: inline-block;
+                width: 150px;
+                font-weight: 500;
+            }
+
+            .control-group button {
+                padding: 8px 16px;
+                margin-right: 8px;
+                background: var(--primary-color);
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+            }
+
+            .control-group button:hover {
+                opacity: 0.9;
+            }
+
+            /* Mock ha-card styles */
+            ha-card {
+                display: block;
+                background: var(--card-background-color);
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            }
+
+            /* Mock ha-icon */
+            ha-icon {
+                display: inline-block;
+                width: 24px;
+                height: 24px;
+            }
+
+            ha-icon::before {
+                content: "⚙️";
+                font-size: 20px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Aqara FP2 Card Test Environment</h1>
+
+            <div class="test-controls">
+                <h2>Test Controls</h2>
+
+                <div class="control-group">
+                    <label>Zone Occupancy:</label>
+                    <button onclick="toggleZoneOccupancy(1)">
+                        Toggle Zone 1
+                    </button>
+                    <button onclick="toggleZoneOccupancy(2)">
+                        Toggle Zone 2
+                    </button>
+                </div>
+
+                <div class="control-group">
+                    <label>Targets:</label>
+                    <button onclick="addRandomTarget()">Add Target</button>
+                    <button onclick="removeTarget()">Remove Target</button>
+                    <button onclick="clearTargets()">Clear All</button>
+                </div>
+
+                <div class="control-group">
+                    <label>Mounting:</label>
+                    <button onclick="setMounting('wall')">Wall</button>
+                    <button onclick="setMounting('left_upper_corner')">
+                        Left Corner
+                    </button>
+                    <button onclick="setMounting('right_upper_corner')">
+                        Right Corner
+                    </button>
+                </div>
+
+                <div class="control-group">
+                    <label>Animation:</label>
+                    <button onclick="toggleAnimation()">
+                        Start/Stop Target Movement
+                    </button>
+                </div>
+            </div>
+
+            <aqara-fp2-card id="test-card"></aqara-fp2-card>
+        </div>
+
+        <script>
+            // Mock Home Assistant API and data
+            let mockHassStates = {};
+            let animationInterval = null;
+
+            // Helper to create a grid hex bitmap string (14 rows × 4 hex chars = 56 chars)
+            // Each row is represented by 4 hex characters (2 bytes), with the 14 LSBs indicating cell states
+            function createGrid(cellCallback) {
+                let grid = "";
+                for (let y = 0; y < 14; y++) {
+                    let rowBits = 0;
+                    // Pack 14 cells into a 16-bit value (only 14 LSBs used)
+                    for (let x = 0; x < 14; x++) {
+                        if (cellCallback(x, y)) {
+                            rowBits |= 1 << x;
+                        }
+                    }
+                    // Write as 4 hex characters (zero-padded)
+                    grid += rowBits.toString(16).padStart(4, "0");
+                }
+                return grid;
+            }
+
+            // Initialize mock entities
+            function initMockEntities() {
+                const prefix = "sensor.fp2_test";
+
+                // --- Static Zone Definitions (Global Text Sensors) ---
+                // These are global zones that define the sensor's static configuration
+
+                // Edge label grid - marks cells that are outside the detection area
+                mockHassStates[`${prefix}_edge_label_grid`] = {
+                    state: createGrid((x, y) => {
+                        return x < 1 || x > 12 || y < 1 || y > 12;
+                    }),
+                    attributes: {},
+                };
+
+                // Entry/exit zone grid - marks cells designated as entry/exit areas
+                mockHassStates[`${prefix}_entry_exit_grid`] = {
+                    state: createGrid((x, y) => {
+                        return x === 7 && y === 1; // Door at top center
+                    }),
+                    attributes: {},
+                };
+
+                // Interference source grid - marks cells with known interference sources
+                mockHassStates[`${prefix}_interference_grid`] = {
+                    state: createGrid((x, y) => {
+                        return x === 10 && y === 10; // Fan in corner
+                    }),
+                    attributes: {},
+                };
+
+                // --- Detection Zones (Sub-Devices) ---
+                // Each zone is registered as a sub-device (via_device_id points to main FP2 device)
+                // Each zone sub-device has: map, occupancy state, and motion sensors
+
+                // Zone 1 - Living area (4x4 zone)
+                mockHassStates[`${prefix}_zone_1_map`] = {
+                    state: createGrid((x, y) => {
+                        return x >= 3 && x <= 6 && y >= 3 && y <= 6;
+                    }),
+                    attributes: {},
+                };
+                mockHassStates[`${prefix}_zone_1_occupancy`] = {
+                    state: "off",
+                    attributes: {},
+                };
+                mockHassStates[`${prefix}_zone_1_motion`] = {
+                    state: "none",
+                    attributes: {},
+                };
+
+                // Zone 2 - Desk area (3x3 zone)
+                mockHassStates[`${prefix}_zone_2_map`] = {
+                    state: createGrid((x, y) => {
+                        return x >= 8 && x <= 10 && y >= 5 && y <= 7;
+                    }),
+                    attributes: {},
+                };
+                mockHassStates[`${prefix}_zone_2_occupancy`] = {
+                    state: "off",
+                    attributes: {},
+                };
+                mockHassStates[`${prefix}_zone_2_motion`] = {
+                    state: "none",
+                    attributes: {},
+                };
+
+                // --- Full Location Data Sensor ---
+                // Text sensor containing JSON array with all target locations
+                // Format: [{ id, x, y, velocity_x, velocity_y }, ...]
+                mockHassStates[`${prefix}_targets`] = {
+                    state: JSON.stringify([]),
+                    attributes: {},
+                };
+            }
+
+            // Mock Home Assistant object
+            const mockHass = {
+                states: mockHassStates,
+                callService: function (domain, service, data) {
+                    console.log("Mock service call:", domain, service, data);
+                },
+            };
+
+            // Test control functions
+            function toggleZoneOccupancy(zoneId) {
+                const prefix = "sensor.fp2_test";
+                const entity =
+                    mockHassStates[`${prefix}_zone_${zoneId}_occupancy`];
+                entity.state =
+                    entity.state === "on" ? "off" : "on";
+                updateCard();
+            }
+
+            function addRandomTarget() {
+                const prefix = "sensor.fp2_test";
+                const targetsEntity = mockHassStates[`${prefix}_targets`];
+                const targets = JSON.parse(targetsEntity.state);
+
+                const newTarget = {
+                    id: targets.length + 1,
+                    x: 2 + Math.random() * 10,
+                    y: 2 + Math.random() * 10,
+                    velocity_x: (Math.random() - 0.5) * 2,
+                    velocity_y: (Math.random() - 0.5) * 2,
+                };
+
+                targets.push(newTarget);
+                targetsEntity.state = JSON.stringify(targets);
+                updateCard();
+            }
+
+            function removeTarget() {
+                const prefix = "sensor.fp2_test";
+                const targetsEntity = mockHassStates[`${prefix}_targets`];
+                const targets = JSON.parse(targetsEntity.state);
+
+                if (targets.length > 0) {
+                    targets.pop();
+                    targetsEntity.state = JSON.stringify(targets);
+                    updateCard();
+                }
+            }
+
+            function clearTargets() {
+                const prefix = "sensor.fp2_test";
+                mockHassStates[`${prefix}_targets`].state = JSON.stringify([]);
+                updateCard();
+            }
+
+            function setMounting(position) {
+                const card = document.getElementById("test-card");
+                card.config.mounting_position = position;
+                updateCard();
+            }
+
+            function toggleAnimation() {
+                if (animationInterval) {
+                    clearInterval(animationInterval);
+                    animationInterval = null;
+                } else {
+                    animationInterval = setInterval(() => {
+                        const prefix = "sensor.fp2_test";
+                        const targetsEntity =
+                            mockHassStates[`${prefix}_targets`];
+                        const targets = JSON.parse(targetsEntity.state);
+
+                        // Move targets based on velocity
+                        targets.forEach((target) => {
+                            target.x += target.velocity_x * 0.1;
+                            target.y += target.velocity_y * 0.1;
+
+                            // Bounce off edges (considering edge labels)
+                            if (target.x < 2 || target.x > 12)
+                                target.velocity_x *= -1;
+                            if (target.y < 2 || target.y > 12)
+                                target.velocity_y *= -1;
+
+                            // Clamp position
+                            target.x = Math.max(2, Math.min(12, target.x));
+                            target.y = Math.max(2, Math.min(12, target.y));
+                        });
+
+                        targetsEntity.state = JSON.stringify(targets);
+                        updateCard();
+                    }, 100);
+                }
+            }
+
+            function updateCard() {
+                const card = document.getElementById("test-card");
+                card.hass = mockHass;
+            }
+
+            // Initialize when page loads
+            window.addEventListener("DOMContentLoaded", () => {
+                initMockEntities();
+
+                const card = document.getElementById("test-card");
+                card.setConfig({
+                    entity_prefix: "sensor.fp2_test",
+                    title: "Test FP2 Sensor",
+                    display_mode: "full",
+                    show_grid: true,
+                    show_sensor_position: true,
+                    show_zone_labels: true,
+                    mounting_position: "wall",
+                });
+
+                card.hass = mockHass;
+            });
+        </script>
+
+        <!-- Include the card implementation from card.js -->
+        <script src="card.js"></script>
+    </body>
+</html>
