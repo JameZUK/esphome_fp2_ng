@@ -100,9 +100,12 @@ class AqaraFP2Card extends HTMLElement {
         #fp2-canvas {
           width: 100%;
           height: auto;
+          max-width: 100%;
+          display: block;
           border: 1px solid var(--divider-color);
           border-radius: 4px;
           background: var(--card-background-color);
+          box-sizing: border-box;
         }
         .info-panel {
           font-size: 14px;
@@ -124,6 +127,13 @@ class AqaraFP2Card extends HTMLElement {
 
     this.canvas.addEventListener("click", (e) => this.handleCanvasClick(e));
     this.canvas.addEventListener("mousemove", (e) => this.handleCanvasHover(e));
+
+    // Set up ResizeObserver to handle card resizing
+    this.resizeObserver = new ResizeObserver(() => {
+      console.log(`[FP2 Card] Container resized, redrawing canvas`);
+      this.updateCard();
+    });
+    this.resizeObserver.observe(this.content);
   }
 
   updateCard() {
@@ -349,7 +359,13 @@ class AqaraFP2Card extends HTMLElement {
 
   renderCanvas(data) {
     // Calculate canvas dimensions from card content container
-    const containerWidth = this.content.clientWidth || 600;
+    const containerWidth = this.content.clientWidth;
+    if (!containerWidth || containerWidth === 0) {
+      console.warn(`[FP2 Card] Container width is ${containerWidth}, deferring render`);
+      return;
+    }
+
+    console.log(`[FP2 Card] Rendering canvas with container width: ${containerWidth}px`);
     const dpr = window.devicePixelRatio || 1;
 
     // Determine which cells to display
@@ -786,6 +802,12 @@ class AqaraFP2Card extends HTMLElement {
 
   handleCanvasHover(e) {
     // Implement hover effects if needed
+  }
+
+  disconnectedCallback() {
+    if (this.resizeObserver) {
+      this.resizeObserver.disconnect();
+    }
   }
 
   getCardSize() {
