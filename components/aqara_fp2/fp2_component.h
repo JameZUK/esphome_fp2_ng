@@ -7,6 +7,8 @@
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
 
+#include "../aqara_fp2_accel/aqara_fp2_accel.h"
+
 #include <ArduinoJson.h>
 #include <array>
 #include <cstdint>
@@ -217,6 +219,10 @@ public:
     }
   }
 
+  void set_fp2_accel(aqara_fp2_accel::AqaraFP2Accel *accel) {
+      fp2_accel_ = accel;
+  }
+
   void set_location_reporting_enabled(bool enabled);
 
   // Grid format conversion
@@ -233,11 +239,19 @@ protected:
   void handle_incoming_byte_(uint8_t byte);
   void handle_parsed_frame_(uint8_t type, uint16_t sub_id,
                             const std::vector<uint8_t> &payload);
+  void handle_ack_(uint16_t sub_id);
+  void handle_report_(uint16_t sub_id, const std::vector<uint8_t> &payload);
+  void handle_zone_presence_report_(const std::vector<uint8_t> &payload);
+  void handle_location_tracking_report_(const std::vector<uint8_t> &payload);
+  void handle_response_(uint16_t sub_id, const std::vector<uint8_t> &payload);
+  void handle_reverse_read_request_(uint16_t sub_id);
   void send_ack_(uint16_t sub_id);
 
   // Initialization
   void perform_reset_();
   void check_initialization_();
+
+  aqara_fp2_accel::AqaraFP2Accel *fp2_accel_{nullptr};
 
   GPIOPin *reset_pin_{nullptr};
   bool init_done_{false};
@@ -312,8 +326,6 @@ protected:
   static const uint32_t ACK_TIMEOUT_MS = 500;
   static const uint8_t MAX_RETRIES = 3;
 
-  void enqueue_command_(OpCode type, uint16_t sub_id,
-                        const std::vector<uint8_t> &data = {});
   void enqueue_command_(OpCode type, uint16_t sub_id, uint8_t byte_val);
   void enqueue_command_(OpCode type, uint16_t sub_id, uint16_t word_val);
   void enqueue_command_(OpCode type, uint16_t sub_id, bool bool_val);

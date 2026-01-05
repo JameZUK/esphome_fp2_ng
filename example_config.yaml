@@ -1,0 +1,161 @@
+esphome:
+  name: test-fp2
+
+  devices:
+    - id: test_sofa_zone_device
+      name: "Test Sofa Zone Device"
+
+esp32:
+  board: esp32-solo1
+  framework:
+    type: esp-idf
+
+    sdkconfig_options:
+      CONFIG_FREERTOS_UNICORE: "y"
+      CONFIG_ESP_SYSTEM_SINGLE_CORE_MODE: "y"
+    advanced:
+      ignore_efuse_mac_crc: true
+      ignore_efuse_custom_mac: true
+
+# Configure `api` and `wifi`
+
+logger:
+
+uart:
+  id: uart_bus
+  tx_pin: GPIO19
+  rx_pin: GPIO18
+  baud_rate: 890000
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+aqara_fp2_accel:
+  id: fp2_accel
+
+aqara_fp2:
+  id: fp2
+  accel: fp2_accel
+
+  uart_id: uart_bus
+
+  # Radar Reset Pin (from README: IO13 - RAD U11 / NRESET)
+  reset_pin: GPIO13
+  mounting_position: left_corner
+  left_right_reverse: false
+
+  presence_sensitivity: medium
+  closing_setting: 1
+  fall_detection_sensitivity: low
+
+  people_counting_report_enable: false
+  people_number_enable: false
+  target_type_enable: false
+
+  target_tracking:
+    name: "Targets"
+
+  location_report_switch:
+    name: "Report Targets"
+
+  # 14x14 Grid (Active Area)
+  interference_grid: |-
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+
+  exit_grid: |-
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+    . . . . . . . . . . . . . .
+
+  zones:
+    - id: sofa_zone
+      sensitivity: high
+      grid: |-
+        . . X X X . . . . . . . . .
+        . . X X X . . . . . . . . .
+        . . X X X . . . . . . . . .
+        . . . . . . . . . . . . . .
+        . . . . . . . . . . . . . .
+        . . . . . . . . . . . . . .
+        . . . . . . . . . . . . . .
+        . . . . . . . . . . . . . .
+        . . . . . . . . . . . . . .
+        . . . . . . . . . . . . . .
+        . . . . . . . . . . . . . .
+        . . . . . . . . . . . . . .
+        . . . . . . . . . . . . . .
+        . . . . . . . . . . . . . .
+
+# User Button (README: SENSOR_VP - USER_SWITCH -> GPIO36)
+binary_sensor:
+  - platform: gpio
+    pin: GPIO36
+    name: "User Button"
+    on_press:
+      then:
+        - logger.log: "Button Pressed!"
+
+  - platform: aqara_fp2
+    type: presence
+    zone_id: sofa_zone
+    name: "Sofa Zone Presence"
+    device_id: test_sofa_zone_device
+
+text_sensor:
+  - platform: aqara_fp2
+    id: edge_label_grid
+    fp2_id: fp2
+    type: edge_label_grid
+    name: "Edge Label Grid"
+
+  - platform: aqara_fp2
+    id: entry_exit_grid
+    fp2_id: fp2
+    type: entry_exit_grid
+    name: "Entry Exit Grid"
+
+  - platform: aqara_fp2
+    id: interference_grid
+    fp2_id: fp2
+    type: interference_grid
+    name: "Interference Grid"
+
+  - platform: aqara_fp2
+    fp2_id: fp2
+    type: zone_map
+    zone_id: sofa_zone
+    name: "Zone Map"
+    device_id: test_sofa_zone_device
+
+# Status LED (README: IO27 - LED). Using one channel of RGB as status.
+# Unused: IO26, IO14
+light:
+  - platform: status_led
+    name: "Status LED"
+    pin: GPIO27
