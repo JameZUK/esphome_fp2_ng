@@ -403,9 +403,10 @@ class AqaraFP2Card extends HTMLElement {
     // --- Full Location Data Sensor ---
     // Text sensor containing base64-encoded binary target data
     // Binary format: [count(1)][target(14) * count]
+    // Will be null/undefined when location reporting is disabled
     console.log(`[FP2 Card] Loading target data...`);
     const targetsBase64 = getEntityState(`${prefix}_targets`);
-    const targetData = decodeTargetsBase64(targetsBase64);
+    const targetData = targetsBase64 ? decodeTargetsBase64(targetsBase64) : [];
     const targetCount = targetData.length;
     console.log(`[FP2 Card] Total targets: ${targetCount}`);
 

@@ -60,8 +60,8 @@ void FP2Component::set_location_reporting_enabled(bool enabled) {
   this->location_reporting_active_ = enabled;
   this->enqueue_command_(OpCode::WRITE, 0x0112, (uint8_t)(enabled ? 1 : 0));
   if (!enabled && this->target_tracking_sensor_ != nullptr) {
-    // Publish empty targets as base64: single byte with count=0 -> "AA=="
-    this->target_tracking_sensor_->publish_state("AA==");
+    // Clear the sensor state when location reporting is disabled
+    this->target_tracking_sensor_->set_has_state(false);
   }
 }
 
