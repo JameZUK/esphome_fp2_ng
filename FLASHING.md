@@ -14,7 +14,7 @@ We don't support updating the Radar firmware from ESPHome yet.
 
 Remove the 4 rubber plugs in the rear of the device and unscrew the 4 screws.
 
-![back_screws.jpg](back_screws.jpg)
+![back_screws.jpg](images/back_screws.jpg)
 
 After the screws have been removed, pull the front and rear of the device apart firmly. Removing the rear will unplug a header connecting to the USB port.
 
@@ -24,11 +24,11 @@ Connecting to the device can be a little bit tricky, you will need to connect to
 
 I marked 2 different ground points, you may use either. You may either solder a wire to supply the board with 5V when flashing, or you may plug in the USB daughter board and use a USB cable for power.
 
-![flashing_connections.jpg](flashing_connections.jpg)
+![flashing_connections.jpg](images/flashing_connections.jpg)
 
 TODO connection table
 
-![wires_connected.jpg](wires_connected.jpg)
+![wires_connected.jpg](images/wires_connected.jpg)
 
 There are plastic clips in the case which makes removing the PCB entirely a little bit annoying. I found it easier to just prop up the board sideways with a toothpick without removing it entirely.
 
@@ -36,7 +36,7 @@ You may find it easier to remove the board from the case entirely, If you go for
 
 NOTE: I connected one wire wrong in the image above, make sure to follow the diagram!
 
-![wires_and_usb_connected.jpg](wires_and_usb_connected.jpg)
+![wires_and_usb_connected.jpg](images/wires_and_usb_connected.jpg)
 
 I chose to power the board with USB when flashing it here. Make sure you plug in the USB connector board the correct way if you do!
 
