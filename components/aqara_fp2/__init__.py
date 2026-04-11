@@ -63,6 +63,7 @@ CONF_RADAR_TEMPERATURE = "radar_temperature"
 CONF_PRESENCE = "presence"
 CONF_GLOBAL_ZONE = "global_zone"
 CONF_RADAR_SOFTWARE_VERSION = "radar_software_version"
+CONF_PEOPLE_COUNT = "people_count"
 
 MOUNTING_POSITIONS = {
     "wall": 0x01,
@@ -209,6 +210,11 @@ CONFIG_SCHEMA = (
                 state_class=STATE_CLASS_MEASUREMENT,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(CONF_PEOPLE_COUNT): sensor.sensor_schema(
+                icon="mdi:account-group",
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+            ),
         }
     )
     .extend(uart.UART_DEVICE_SCHEMA)
@@ -217,6 +223,7 @@ CONFIG_SCHEMA = (
 
 SENSOR_MAP = {
     CONF_RADAR_TEMPERATURE: (sensor.new_sensor, "set_radar_temperature_sensor"),
+    CONF_PEOPLE_COUNT: (sensor.new_sensor, "set_people_count_sensor"),
     CONF_RADAR_SOFTWARE_VERSION: (text_sensor_.new_text_sensor, "set_radar_software_sensor"),
     CONF_LOCATION_REPORT_SWITCH: (switch.new_switch, "set_location_report_switch"),
     CONF_TARGET_TRACKING: (text_sensor_.new_text_sensor, "set_target_tracking_sensor"),

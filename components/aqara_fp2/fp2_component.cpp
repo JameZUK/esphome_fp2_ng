@@ -477,14 +477,14 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 radar_software_sensor_->publish_state(ver_str);
             }
         }
-        break;
       }
+      break;
 
     case AttrId::WORK_MODE:
         if (payload.size() == 4 && payload[2] == 0x00) {
             ESP_LOGI(TAG, "Received work mode report: %u", payload[3]);
-            break;
         }
+        break;
 
     case AttrId::DETECT_ZONE_MOTION:
         if (payload.size() == 5 && payload[2] == 0x01) {
@@ -492,29 +492,32 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
             uint8_t state = payload[4];
             ESP_LOGD(TAG, "Zone Motion Report: Zone %u = %u", zone_id, state);
 
-            //for (auto &z : zones_) {
-            //  if (z->id == zone_id) {
-            //    z->publish_motion(state == 1);
-            //    break;
-            //  }
-            //}
-            break;
+            for (auto &z : zones_) {
+              if (z->id == zone_id) {
+                z->publish_motion(state == 1);
+                break;
+              }
+            }
         }
+        break;
 
     case AttrId::MOTION_DETECT:
         if (payload.size() == 4 && payload[2]  == 0x00) {
             uint8_t state = payload[3];
-            global_motion_sensor_->publish_state(state == 0);
+            if (global_motion_sensor_ != nullptr) {
+                global_motion_sensor_->publish_state(state == 0);
+            }
             ESP_LOGI(TAG, "Received global motion report: %u", state);
-            break;
         }
+        break;
 
     case AttrId::PRESENCE_DETECT:
         if (payload.size() == 4 && payload[2]  == 0x00) {
             uint8_t state = payload[3];
-            global_presence_sensor_->publish_state(state != 0);
+            if (global_presence_sensor_ != nullptr) {
+                global_presence_sensor_->publish_state(state != 0);
+            }
             ESP_LOGI(TAG, "Received global presence report: %u", state);
-            break;
         }
         break;
 
@@ -525,6 +528,9 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 | ((uint32_t) payload[5]) << 8
                 | ((uint32_t) payload[6]);
             ESP_LOGI(TAG, "Received ontime people number report: %u", count);
+            if (people_count_sensor_ != nullptr) {
+                people_count_sensor_->publish_state((float) count);
+            }
         }
         break;
 
@@ -542,8 +548,8 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                     break;
                 }
             }
-            break;
         }
+        break;
 
     case AttrId::LOCATION_TRACKING_DATA:  // Location Tracking Data
       handle_location_tracking_report_(payload);
@@ -781,22 +787,6 @@ std::string FP2Component::grid_to_hex_card_format(const GridMap &grid) {
 
   return result;
 }
-
-// void FP2Component::add_zone(uint8_t id, binary_sensor::BinarySensor *sens,
-//                             const std::vector<uint8_t> &grid,
-//                             uint8_t sensitivity) {
-//   FP2Zone z;
-//   z.id = id;
-//   z.occupancy = sens;
-//   z.sensitivity = sensitivity;
-//
-//   if (grid.size() == 40) {
-//     std::copy(grid.begin(), grid.end(), z.grid.begin());
-//     zones_.push_back(z);
-//   } else {
-//     ESP_LOGE(TAG, "Zone %d grid size mismatch: %d != 40", id, grid.size());
-//   }
-// }
 
 void FP2Component::dump_config() {
   ESP_LOGCONFIG(TAG, "Aqara FP2:");

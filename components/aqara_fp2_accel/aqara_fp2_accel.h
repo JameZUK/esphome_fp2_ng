@@ -20,7 +20,7 @@ static const uint8_t ACC_SENSOR_ADDR = 0x27;
 static const uint8_t ACC_SAMPLE_COUNT = 10;
 
 // Constants for angle calculations
-static const double PI = 3.141614159265;
+static const double PI = 3.14159265358979;
 static const double RAD_TO_SCALED_DEG = 180.0 / PI / 0.5;
 static const double EPSILON = 0.00001;
 

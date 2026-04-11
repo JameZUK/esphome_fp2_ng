@@ -232,6 +232,9 @@ public:
   void set_radar_temperature_sensor(sensor::Sensor *sensor) {
       radar_temperature_sensor_ = sensor;
   }
+  void set_people_count_sensor(sensor::Sensor *sensor) {
+      people_count_sensor_ = sensor;
+  }
   void set_radar_software_sensor(text_sensor::TextSensor *sensor) {
       radar_software_sensor_ = sensor;
   }
@@ -307,6 +310,7 @@ protected:
   text_sensor::TextSensor *mounting_position_sensor_{nullptr};
 
   sensor::Sensor *radar_temperature_sensor_{nullptr};
+  sensor::Sensor *people_count_sensor_{nullptr};
   text_sensor::TextSensor *radar_software_sensor_{nullptr};
 
   // Map Configuration (compile-time generated)

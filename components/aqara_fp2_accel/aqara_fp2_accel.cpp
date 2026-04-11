@@ -231,14 +231,9 @@ bool AqaraFP2Accel::calculate_calibration() {
   accel_corr_y_ = -acc_y_avg_;
   accel_corr_z_ = -1024 - acc_z_avg_;
 
-  accel_corr_x_ = 0;
-  accel_corr_y_ = 0;
-  accel_corr_z_ = 0;
+  ESP_LOGD(TAG, "correction_x=%d y=%d z=%d", accel_corr_x_, accel_corr_y_, accel_corr_z_);
+
   return true;
-
-  // ESP_LOGD(TAG, "correction_x=%d y=%d z=%d", accel_corr_x_, accel_corr_y_, accel_corr_z_);
-
-  // return true;
 }
 
 static const double SCALE_FACTOR = 57.2957795;  // 180.0 / PI - radians to degrees
