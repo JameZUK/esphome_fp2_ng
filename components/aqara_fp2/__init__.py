@@ -64,6 +64,7 @@ CONF_PRESENCE = "presence"
 CONF_GLOBAL_ZONE = "global_zone"
 CONF_RADAR_SOFTWARE_VERSION = "radar_software_version"
 CONF_PEOPLE_COUNT = "people_count"
+CONF_ZONE_PEOPLE_COUNT = "zone_people_count"
 
 MOUNTING_POSITIONS = {
     "wall": 0x01,
@@ -166,6 +167,11 @@ ZONE_SCHEMA = (
             cv.GenerateID(CONF_ID): cv.declare_id(FP2Zone),
             cv.Required(CONF_GRID): parse_ascii_grid,
             cv.Optional("zone_map_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
+            cv.Optional(CONF_ZONE_PEOPLE_COUNT): sensor.sensor_schema(
+                icon="mdi:account-group",
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+            ),
         }
     ).extend(ZONE_BASE_SCHEMA)
 )
@@ -238,6 +244,7 @@ SENSOR_MAP = {
 ZONE_SENSOR_MAP = {
     CONF_PRESENCE: (binary_sensor.new_binary_sensor, "set_presence_sensor"),
     CONF_MOTION: (binary_sensor.new_binary_sensor, "set_motion_sensor"),
+    CONF_ZONE_PEOPLE_COUNT: (sensor.new_sensor, "set_zone_people_count_sensor"),
 
     # Text config sensors
     "zone_map_sensor": (text_sensor_.new_text_sensor, "set_map_sensor"),

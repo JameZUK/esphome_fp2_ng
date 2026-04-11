@@ -39,6 +39,10 @@ struct FP2Zone : public Component {
     this->map_sensor = sensor;
   }
 
+  void set_zone_people_count_sensor(sensor::Sensor *sensor) {
+    this->zone_people_count_sensor = sensor;
+  }
+
   void publish_presence(bool state) {
     if (this->presence_sensor != nullptr) {
       this->presence_sensor->publish_state(state);
@@ -61,6 +65,7 @@ struct FP2Zone : public Component {
   esphome::binary_sensor::BinarySensor *presence_sensor{nullptr};
   esphome::binary_sensor::BinarySensor *motion_sensor{nullptr};
   esphome::text_sensor::TextSensor *map_sensor{nullptr};
+  esphome::sensor::Sensor *zone_people_count_sensor{nullptr};
   GridMap grid;
   uint8_t sensitivity; // 1=Low, 2=Med, 3=High
 };
@@ -264,6 +269,8 @@ protected:
   void handle_ack_(AttrId attr_id);
   void handle_report_(AttrId attr_id, const std::vector<uint8_t> &payload);
   void handle_location_tracking_report_(const std::vector<uint8_t> &payload);
+  void update_zone_people_counts_(const std::vector<uint8_t> &payload, uint8_t count);
+  static bool is_target_in_zone_(int16_t raw_x, int16_t raw_y, const GridMap &grid);
   void handle_temperature_report_(const std::vector<uint8_t> &payload);
   void handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload);
   void handle_reverse_read_request_(AttrId attr_id);
@@ -302,6 +309,7 @@ protected:
   text_sensor::TextSensor *target_tracking_sensor_{nullptr};
   FP2LocationSwitch *location_report_switch_{nullptr};
   bool location_reporting_active_{false};
+  bool has_zone_people_count_sensors_{false};
 
   // Grid text sensors
   text_sensor::TextSensor *edge_label_grid_sensor_{nullptr};

@@ -10,23 +10,27 @@ bool AqaraFP2Accel::i2c_init_bus() {
   ESP_LOGI(TAG, "Initializing I2C bus on port %d (SDA=%d, SCL=%d, freq=%d Hz)",
            i2c_port_, sda_pin_, scl_pin_, frequency_);
 
-  i2c_config_t conf = {};
-  conf.mode = I2C_MODE_MASTER;
-  conf.sda_io_num = static_cast<gpio_num_t>(sda_pin_);
-  conf.scl_io_num = static_cast<gpio_num_t>(scl_pin_);
-  conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-  conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-  conf.master.clk_speed = frequency_;
+  i2c_master_bus_config_t bus_conf = {};
+  bus_conf.clk_source = I2C_CLK_SRC_DEFAULT;
+  bus_conf.i2c_port = i2c_port_;
+  bus_conf.sda_io_num = static_cast<gpio_num_t>(sda_pin_);
+  bus_conf.scl_io_num = static_cast<gpio_num_t>(scl_pin_);
+  bus_conf.flags.enable_internal_pullup = true;
 
-  esp_err_t err = i2c_param_config(i2c_port_, &conf);
+  esp_err_t err = i2c_new_master_bus(&bus_conf, &bus_handle_);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "I2C param config failed: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "I2C new master bus failed: %s", esp_err_to_name(err));
     return false;
   }
 
-  err = i2c_driver_install(i2c_port_, I2C_MODE_MASTER, 0, 0, 0);
+  i2c_device_config_t dev_conf = {};
+  dev_conf.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+  dev_conf.device_address = ACC_SENSOR_ADDR;
+  dev_conf.scl_speed_hz = frequency_;
+
+  err = i2c_master_bus_add_device(bus_handle_, &dev_conf, &device_handle_);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "I2C driver install failed: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "I2C add device failed: %s", esp_err_to_name(err));
     return false;
   }
 
@@ -142,15 +146,13 @@ bool AqaraFP2Accel::i2c_read_accel_xyz(int16_t *x, int16_t *y, int16_t *z) {
   uint8_t data[6];
   uint8_t reg_addr = 0x02;
 
-  // Use ESP-IDF I2C driver directly for better control
-  esp_err_t err = i2c_master_write_read_device(
-    i2c_port_,
-    ACC_SENSOR_ADDR,
+  esp_err_t err = i2c_master_transmit_receive(
+    device_handle_,
     &reg_addr,
     1,
     data,
     6,
-    pdMS_TO_TICKS(1000)  // 1 second timeout
+    1000
   );
 
   if (err != ESP_OK) {
@@ -188,12 +190,11 @@ bool AqaraFP2Accel::i2c_read_accel_xyz(int16_t *x, int16_t *y, int16_t *z) {
 bool AqaraFP2Accel::i2c_write_reg(uint8_t reg, uint8_t value) {
   uint8_t write_buf[2] = {reg, value};
 
-  esp_err_t err = i2c_master_write_to_device(
-    i2c_port_,
-    ACC_SENSOR_ADDR,
+  esp_err_t err = i2c_master_transmit(
+    device_handle_,
     write_buf,
     2,
-    pdMS_TO_TICKS(1000)  // 1 second timeout
+    1000
   );
 
   if (err != ESP_OK) {

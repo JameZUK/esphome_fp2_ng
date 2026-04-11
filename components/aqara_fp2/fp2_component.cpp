@@ -207,6 +207,18 @@ void FP2Component::check_initialization_() {
     if (target_tracking_sensor_ != nullptr) {
       target_tracking_sensor_->set_has_state(false);
     }
+
+    // Auto-enable location reporting if any zone has a people count sensor
+    for (const auto &zone : zones_) {
+      if (zone->zone_people_count_sensor != nullptr) {
+        has_zone_people_count_sensors_ = true;
+        break;
+      }
+    }
+    if (has_zone_people_count_sensors_) {
+      ESP_LOGI(TAG, "Zone people count sensors configured, enabling location reporting");
+      set_location_reporting_enabled(true);
+    }
   }
 }
 
@@ -600,6 +612,50 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
 
   if (this->target_tracking_sensor_ != nullptr) {
     this->target_tracking_sensor_->publish_state(base64_str);
+  }
+
+  // Update per-zone people counts from target positions
+  if (has_zone_people_count_sensors_) {
+    update_zone_people_counts_(payload, count);
+  }
+}
+
+bool FP2Component::is_target_in_zone_(int16_t raw_x, int16_t raw_y, const GridMap &grid) {
+  // Map raw target coords to 20x16 internal grid
+  // Raw X: -400 to +400 → 14 visible cols → grid cols 2-15 (offset_col=2)
+  // Raw Y: 0 to 800 → 14 visible rows → grid rows 0-13 (offset_row=0)
+  float fx = (-raw_x + 400.0f) / 800.0f * 14.0f;
+  float fy = raw_y / 800.0f * 14.0f;
+
+  int col = (int)fx + 2;  // offset_col
+  int row = (int)fy;       // offset_row = 0
+
+  if (col < 0 || col > 15 || row < 0 || row > 19) return false;
+
+  // Each row is 2 bytes big-endian, bit 15 = col 0
+  uint16_t row_val = (grid[row * 2] << 8) | grid[row * 2 + 1];
+  return (row_val & (1 << (15 - col))) != 0;
+}
+
+void FP2Component::update_zone_people_counts_(const std::vector<uint8_t> &payload, uint8_t count) {
+  for (auto &zone : zones_) {
+    if (zone->zone_people_count_sensor == nullptr) continue;
+
+    int zone_count = 0;
+    for (int i = 0; i < count; i++) {
+      int offset = 6 + (i * 14);
+      if (offset + 14 > (int)payload.size()) break;
+
+      // Target: id(1), x(2 BE), y(2 BE), z(2), velocity(2), snr(2), classifier(1), posture(1), active(1)
+      int16_t x = (int16_t)((payload[offset + 1] << 8) | payload[offset + 2]);
+      int16_t y = (int16_t)((payload[offset + 3] << 8) | payload[offset + 4]);
+
+      if (is_target_in_zone_(x, y, zone->grid)) {
+        zone_count++;
+      }
+    }
+
+    zone->zone_people_count_sensor->publish_state((float)zone_count);
   }
 }
 

@@ -627,23 +627,14 @@ class AqaraFP2Card extends HTMLElement {
     data.targets.forEach((target) => {
       let gridX, gridY;
 
-      // Convert raw coordinates to grid space based on mounting mode
-      if (data.mountingPosition === "left_upper_corner" || data.mountingPosition === "right_upper_corner") {
-        // Corner mounting modes: 14x14 grid, 7m x 7m area
-        // Raw coordinates: X in [-400, +400], Y in [0, 800]
-        // X = +400: Left edge, X = -400: Right edge
-        // Y = 0: Top edge (closest to sensor), Y = 800: Bottom edge (farthest from sensor)
-        // Conversion (with X flipped to match canvas coords where 0 is left):
-        // Grid_X = (-X + 400) / 800.0 * 14.0, Grid_Y = Y / 800.0 * 14.0
-        gridX = (-target.x + 400) / 800.0 * 14.0;
-        gridY = target.y / 800.0 * 14.0;
-      } else {
-        // Wall mounting mode - TODO: coordinate conversion not yet verified
-        // Stubbing with basic conversion for now
-        console.warn(`[FP2 Card] Wall mounting mode coordinate conversion is not yet implemented, using placeholder`);
-        gridX = target.x * 0.01; // Placeholder
-        gridY = target.y * 0.01; // Placeholder
-      }
+      // Convert raw coordinates to grid space
+      // Raw coordinates: X in [-400, +400], Y in [0, 800]
+      // X = +400: Left edge, X = -400: Right edge
+      // Y = 0: Top edge (closest to sensor), Y = 800: Bottom edge (farthest from sensor)
+      // The coordinate space is the same regardless of mounting position;
+      // mounting position only affects the radar's internal calibration.
+      gridX = (-target.x + 400) / 800.0 * 14.0;
+      gridY = target.y / 800.0 * 14.0;
 
       const x = gridX;
       const y = gridY;
