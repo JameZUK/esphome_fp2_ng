@@ -101,52 +101,124 @@ Known reverse-read attributes:
 - `0x0143` DEVICE_DIRECTION — ESP32 returns accelerometer orientation
 - `0x0120` ANGLE_SENSOR_DATA — ESP32 returns accelerometer tilt angle
 
-## Attribute IDs (SubIDs)
+## Complete Attribute ID (SubID) Reference
 
-### Configuration Attributes (ESP32 → Radar, via WRITE)
+Status: Y = implemented, P = partial (defined but not fully handled), N = not implemented
 
-| SubID | Name | Type | Description |
-|-------|------|------|-------------|
-| 0x0105 | MONITOR_MODE | UINT8 | Detection direction: 0=default, 1=left/right |
-| 0x0106 | CLOSING_SETTING | UINT8 | Proximity: 0=far, 1=medium, 2=close |
-| 0x0107 | EDGE_MAP | BLOB2 | Detection boundary grid (40 bytes) |
-| 0x0109 | ENTRY_EXIT_MAP | BLOB2 | Entry/exit zone grid (40 bytes) |
-| 0x0110 | INTERFERENCE_MAP | BLOB2 | Interference source grid (40 bytes) |
-| 0x0111 | PRESENCE_DETECT_SENSITIVITY | UINT8 | Sensitivity: 1=low, 2=medium, 3=high |
-| 0x0112 | LOCATION_REPORT_ENABLE | UINT8 | Enable target location streaming (0/1) |
-| 0x0114 | ZONE_MAP | BLOB2 | Zone N area map: `[ZoneID(1)][Grid(40)]` |
-| 0x0116 | WORK_MODE | UINT8 | Operating mode |
-| 0x0122 | LEFT_RIGHT_REVERSE | UINT8 | L/R swap: 0=normal, 1=?, 2=reversed |
-| 0x0123 | FALL_SENSITIVITY | UINT8 | Fall detection sensitivity |
-| 0x0128 | TEMPERATURE | — | Radar temperature |
-| 0x0138 | THERMO_EN | BOOL | Enable temperature reporting |
-| 0x0141 | THERMO_DATA | UINT8 | Temperature data mode |
-| 0x0151 | ZONE_SENSITIVITY | UINT16 | `[ZoneID << 8 | Sensitivity]` |
-| 0x0152 | DETECT_ZONE_TYPE | — | Zone N type |
-| 0x0153 | ZONE_CLOSE_AWAY_ENABLE | UINT16 | `[ZoneID << 8 | Enable]` |
-| 0x0158 | PEOPLE_COUNT_REPORT_ENABLE | BOOL | Enable people count reports |
-| 0x0162 | PEOPLE_NUMBER_ENABLE | BOOL | Enable people number tracking |
-| 0x0163 | TARGET_TYPE_ENABLE | BOOL | Enable AI person detection |
-| 0x0168 | SLEEP_MOUNT_POSITION | UINT8 | Sleep zone mounting position |
-| 0x0169 | SLEEP_ZONE_SIZE | — | Sleep zone dimensions |
-| 0x0170 | WALL_CORNER_POS | UINT8 | Mounting position: 0x01=wall, 0x02=left corner, 0x03=right corner |
-| 0x0172 | DWELL_TIME_ENABLE | UINT8 | Enable dwell time tracking |
-| 0x0173 | WALK_DISTANCE_ENABLE | UINT8 | Enable walking distance tracking |
-| 0x0202 | ZONE_ACTIVATION_LIST | BLOB2 | 32-byte zone activation bitmap |
+### System / Info
 
-### Report Attributes (Radar → ESP32, via REPORT)
+| SubID | Name | Type | Dir | Status | Description |
+|-------|------|------|-----|--------|-------------|
+| 0x0101 | HW_VERSION | ? | R→E | N | Hardware version |
+| 0x0102 | RADAR_SW_VERSION | UINT8 | R→E | Y | Heartbeat / firmware version (~1Hz) |
+| 0x0127 | OTA_SET_FLAG | ? | E→R | N | OTA update flag |
+| 0x0201 | DEBUG_LOG | ? | R→E | N | Debug log output |
 
-| SubID | Name | Type | Rate | Description |
-|-------|------|------|------|-------------|
-| 0x0102 | RADAR_SW_VERSION | UINT8 | ~1 Hz | Heartbeat / radar firmware version |
-| 0x0103 | MOTION_DETECT | UINT8 | Event | Global motion state (0=motion, else=no motion) |
-| 0x0104 | PRESENCE_DETECT | UINT8 | Event | Global presence state (0=empty, else=occupied) |
-| 0x0115 | DETECT_ZONE_MOTION | UINT16 | Event | `[ZoneID][State]` zone motion event |
-| 0x0116 | WORK_MODE | UINT8 | Event | Work mode change notification |
-| 0x0117 | LOCATION_TRACKING_DATA | BLOB2 | 10-20 Hz | Per-target position data (see below) |
-| 0x0128 | TEMPERATURE | UINT16 | Periodic | Radar chip temperature |
-| 0x0142 | ZONE_PRESENCE | UINT16 | Event | `[ZoneID][State]` zone presence (1=occupied, 0=empty) |
-| 0x0165 | ONTIME_PEOPLE_NUMBER | UINT32 | Periodic | Total detected person count |
+### Detection Reports
+
+| SubID | Name | Type | Dir | Status | Description |
+|-------|------|------|-----|--------|-------------|
+| 0x0103 | MOTION_DETECT | UINT8 | R→E | Y | Global motion (0=motion, else=none) |
+| 0x0104 | PRESENCE_DETECT | UINT8 | R→E | Y | Global presence (0=empty, else=occupied) |
+| 0x0115 | DETECT_ZONE_MOTION | UINT16 | R→E | Y | Zone motion `[zone_id, state]` |
+| 0x0116 | WORK_MODE | UINT8 | Both | Y | Work mode report/config |
+| 0x0142 | ZONE_PRESENCE | UINT16 | R→E | Y | Zone presence `[zone_id, state]` |
+
+### Configuration
+
+| SubID | Name | Type | Dir | Status | Description |
+|-------|------|------|-----|--------|-------------|
+| 0x0105 | MONITOR_MODE | UINT8 | E→R | Y | Detection direction (0=default, 1=L/R) |
+| 0x0106 | CLOSING_SETTING | UINT8 | E→R | Y | Proximity (0=far, 1=med, 2=close) |
+| 0x0111 | PRESENCE_DETECT_SENSITIVITY | UINT8 | E→R | Y | Sensitivity (1-3) |
+| 0x0122 | LEFT_RIGHT_REVERSE | UINT8 | E→R | Y | L/R swap (0/1/2) |
+| 0x0170 | WALL_CORNER_POS | UINT8 | E→R | Y | Mount: 1=wall, 2=left, 3=right |
+
+### Grid Maps
+
+| SubID | Name | Type | Dir | Status | Description |
+|-------|------|------|-----|--------|-------------|
+| 0x0107 | EDGE_MAP | BLOB2 | E→R | Y | Detection boundary (40B grid) |
+| 0x0109 | ENTRY_EXIT_MAP | BLOB2 | E→R | Y | Enter/exit zones (40B grid) |
+| 0x0110 | INTERFERENCE_MAP | BLOB2 | E→R | Y | Interference sources (40B grid) |
+| 0x0114 | ZONE_MAP | BLOB2 | E→R | Y | Zone area `[ID(1) + grid(40)]` |
+| 0x0151 | ZONE_SENSITIVITY | UINT16 | E→R | Y | Zone sensitivity `[ID<<8\|sens]` |
+| 0x0152 | DETECT_ZONE_TYPE | ? | E→R | P | Zone type (defined, not exposed) |
+| 0x0153 | ZONE_CLOSE_AWAY_ENABLE | UINT16 | E→R | Y | Zone close/away `[ID<<8\|en]` |
+| 0x0202 | ZONE_ACTIVATION_LIST | BLOB2 | E→R | Y | 32-byte zone bitmap |
+
+### Auto-Calibration
+
+| SubID | Name | Type | Dir | Status | Description |
+|-------|------|------|-----|--------|-------------|
+| 0x0125 | INTERFERENCE_AUTO_SET | BLOB2 | R→E | Y | Auto-detected interference grid |
+| 0x0139 | INTERFERENCE_AUTO_ENABLE | BOOL | E→R | Y | Start interference auto-detect |
+| 0x0149 | EDGE_AUTO_SET | BLOB2 | R→E | Y | Auto-detected edge grid |
+| 0x0150 | EDGE_AUTO_ENABLE | BOOL | E→R | Y | Start edge auto-detect |
+| 0x0160 | DELETE_FALSE_TARGETS | ? | E→R | N | Delete false targets |
+
+### Location Tracking
+
+| SubID | Name | Type | Dir | Status | Description |
+|-------|------|------|-----|--------|-------------|
+| 0x0112 | LOCATION_REPORT_ENABLE | UINT8 | E→R | Y | Enable target streaming |
+| 0x0117 | LOCATION_TRACKING_DATA | BLOB2 | R→E | Y | Target positions (10-20Hz) |
+| 0x0120 | ANGLE_SENSOR_DATA | UINT8 | E→R | Y | Accel angle (reverse-read) |
+| 0x0143 | DEVICE_DIRECTION | UINT8 | E→R | Y | Orientation (reverse-read) |
+
+### People Counting
+
+| SubID | Name | Type | Dir | Status | Description |
+|-------|------|------|-----|--------|-------------|
+| 0x0155 | PEOPLE_COUNTING | ? | R→E | N | People counting data |
+| 0x0158 | PEOPLE_COUNT_REPORT_ENABLE | BOOL | E→R | Y | Enable count reports |
+| 0x0162 | PEOPLE_NUMBER_ENABLE | BOOL | E→R | Y | Enable number tracking |
+| 0x0163 | TARGET_TYPE_ENABLE | BOOL | E→R | Y | AI person detection |
+| 0x0164 | REALTIME_PEOPLE | ? | R→E | N | Real-time people data |
+| 0x0165 | ONTIME_PEOPLE_NUMBER | UINT32 | R→E | Y | Total person count |
+| 0x0166 | REALTIME_COUNT | ? | R→E | N | Real-time count |
+
+### Posture / Activity
+
+| SubID | Name | Type | Dir | Status | Description |
+|-------|------|------|-----|--------|-------------|
+| 0x0154 | TARGET_POSTURE | ? | R→E | N | Target posture reports |
+| 0x0157 | POSTURE_REPORT_ENABLE | BOOL | E→R | N | Enable posture reporting |
+| 0x0172 | DWELL_TIME_ENABLE | UINT8 | E→R | P | Dwell tracking (disabled in init) |
+| 0x0173 | WALK_DISTANCE_ENABLE | UINT8 | E→R | P | Walking distance (disabled in init) |
+| 0x0174 | WALK_DISTANCE_ALL | ? | R→E | N | Walking distance data |
+
+### Fall Detection
+
+| SubID | Name | Type | Dir | Status | Description |
+|-------|------|------|-----|--------|-------------|
+| 0x0121 | FALL_DETECTION | ? | R→E | N | Fall detection event |
+| 0x0123 | FALL_SENSITIVITY | UINT8 | E→R | P | Sensitivity (defined, commented in init) |
+| 0x0134 | FALL_OVERTIME_PERIOD | ? | E→R | N | Fall overtime period |
+| 0x0135 | FALL_OVERTIME_DETECTION | ? | R→E | N | Fall overtime detection |
+
+### Sleep Monitoring
+
+| SubID | Name | Type | Dir | Status | Description |
+|-------|------|------|-----|--------|-------------|
+| 0x0156 | SLEEP_REPORT_ENABLE | BOOL | E→R | N | Enable sleep reporting |
+| 0x0159 | SLEEP_DATA | ? | R→E | N | Sleep tracking data |
+| 0x0161 | SLEEP_STATE | ? | R→E | N | Current sleep state |
+| 0x0167 | SLEEP_PRESENCE | ? | R→E | N | Sleep zone presence |
+| 0x0168 | SLEEP_MOUNT_POSITION | UINT8 | E→R | P | Sleep mount pos (defined, unused) |
+| 0x0169 | SLEEP_ZONE_SIZE | ? | E→R | P | Sleep zone size (defined, unused) |
+| 0x0171 | SLEEP_IN_OUT | ? | R→E | N | Sleep zone entry/exit |
+| 0x0176 | SLEEP_EVENT | ? | R→E | N | Sleep events |
+
+### Temperature
+
+| SubID | Name | Type | Dir | Status | Description |
+|-------|------|------|-----|--------|-------------|
+| 0x0128 | TEMPERATURE | UINT16 | R→E | Y | Radar chip temperature |
+| 0x0138 | THERMO_EN | BOOL | E→R | Y | Enable temperature reporting |
+| 0x0141 | THERMO_DATA | UINT8 | E→R | Y | Temperature data mode |
+
+*Dir: R→E = Radar to ESP32, E→R = ESP32 to Radar*
 
 ## Location Tracking Data (SubID 0x0117)
 

@@ -3,7 +3,7 @@ import json
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import pins
-from esphome.components import binary_sensor, sensor, switch, uart
+from esphome.components import binary_sensor, button, sensor, switch, uart
 from esphome.components import text_sensor as text_sensor_
 from esphome.const import (
     CONF_DEVICE_CLASS,
@@ -30,11 +30,13 @@ from esphome.util import Registry
 from ..aqara_fp2_accel import AqaraFP2Accel
 
 DEPENDENCIES = ["uart"]
-AUTO_LOAD = ["binary_sensor", "text_sensor", "sensor", "switch", "json"]
+AUTO_LOAD = ["binary_sensor", "button", "text_sensor", "sensor", "switch", "json"]
 
 aqara_fp2_ns = cg.esphome_ns.namespace("aqara_fp2")
 FP2Component = aqara_fp2_ns.class_("FP2Component", cg.Component, uart.UARTDevice)
 FP2LocationSwitch = aqara_fp2_ns.class_("FP2LocationSwitch", switch.Switch)
+FP2CalibrateEdgeButton = aqara_fp2_ns.class_("FP2CalibrateEdgeButton", button.Button)
+FP2CalibrateInterferenceButton = aqara_fp2_ns.class_("FP2CalibrateInterferenceButton", button.Button)
 FP2Zone = aqara_fp2_ns.class_("FP2Zone", cg.Component)
 
 CONF_FP2_ID = "fp2_id"
@@ -65,6 +67,8 @@ CONF_GLOBAL_ZONE = "global_zone"
 CONF_RADAR_SOFTWARE_VERSION = "radar_software_version"
 CONF_PEOPLE_COUNT = "people_count"
 CONF_ZONE_PEOPLE_COUNT = "zone_people_count"
+CONF_CALIBRATE_EDGE = "calibrate_edge"
+CONF_CALIBRATE_INTERFERENCE = "calibrate_interference"
 
 MOUNTING_POSITIONS = {
     "wall": 0x01,
@@ -196,6 +200,16 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_LOCATION_REPORT_SWITCH): switch.switch_schema(
                 FP2LocationSwitch
             ),
+            cv.Optional(CONF_CALIBRATE_EDGE): button.button_schema(
+                FP2CalibrateEdgeButton,
+                icon="mdi:border-all-variant",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_CALIBRATE_INTERFERENCE): button.button_schema(
+                FP2CalibrateInterferenceButton,
+                icon="mdi:signal-off",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
 
             cv.Optional("edge_label_grid_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
             cv.Optional("entry_exit_grid_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
@@ -232,6 +246,8 @@ SENSOR_MAP = {
     CONF_PEOPLE_COUNT: (sensor.new_sensor, "set_people_count_sensor"),
     CONF_RADAR_SOFTWARE_VERSION: (text_sensor_.new_text_sensor, "set_radar_software_sensor"),
     CONF_LOCATION_REPORT_SWITCH: (switch.new_switch, "set_location_report_switch"),
+    CONF_CALIBRATE_EDGE: (button.new_button, "set_calibrate_edge_button"),
+    CONF_CALIBRATE_INTERFERENCE: (button.new_button, "set_calibrate_interference_button"),
     CONF_TARGET_TRACKING: (text_sensor_.new_text_sensor, "set_target_tracking_sensor"),
 
     # Text config sensors

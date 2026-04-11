@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esphome/components/binary_sensor/binary_sensor.h"
+#include "esphome/components/button/button.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
@@ -102,41 +103,86 @@ enum class OpCode : uint8_t {
 };
 
 enum class AttrId : uint16_t {
-    RADAR_SW_VERSION                = 0x0102,
-    WORK_MODE                       = 0x0116,
+    // --- System / Info ---
+    HW_VERSION                      = 0x0101, // Hardware version
+    RADAR_SW_VERSION                = 0x0102, // Software version / heartbeat (~1Hz)
+    OTA_SET_FLAG                    = 0x0127, // OTA update flag
+    DEBUG_LOG                       = 0x0201, // Debug log output
+
+    // --- Detection Reports ---
+    MOTION_DETECT                   = 0x0103, // Global motion (0=motion, else=none)
+    PRESENCE_DETECT                 = 0x0104, // Global presence (0=empty, else=occupied)
+    DETECT_ZONE_MOTION              = 0x0115, // Zone motion event [zone_id, state]
+    ZONE_PRESENCE                   = 0x0142, // Zone presence [zone_id, state]
+    WORK_MODE                       = 0x0116, // Work mode report
+
+    // --- Configuration ---
     MONITOR_MODE                    = 0x0105, // Detection direction (0=default, 1=L/R)
-    LEFT_RIGHT_REVERSE              = 0x0122, // L/R swap (0/1/2)
-    PRESENCE_DETECT_SENSITIVITY     = 0x0111, // Sensitivity (1-3)
     CLOSING_SETTING                 = 0x0106, // Proximity (0=far, 1=med, 2=close)
-    ZONE_CLOSE_AWAY_ENABLE          = 0x0153, // Zone N close/away enable
-    FALL_SENSITIVITY                = 0x0123, // Fall sensitivity
-    PEOPLE_COUNT_REPORT_ENABLE      = 0x0158, // People counting enable
-    PEOPLE_NUMBER_ENABLE            = 0x0162, // People number enable
-    TARGET_TYPE_ENABLE              = 0x0163, // AI person detection
-    SLEEP_MOUNT_POSITION            = 0x0168, // Sleep mount position
-    SLEEP_ZONE_SIZE                 = 0x0169, // Sleep zone dimensions
-    WALL_CORNER_POS                 = 0x0170, // Wall/corner position
-    DWELL_TIME_ENABLE               = 0x0172, // Dwell tracking
-    WALK_DISTANCE_ENABLE            = 0x0173, // Walking distance
-    INTERFERENCE_MAP                = 0x0110, // Interference map (40B)
-    ENTRY_EXIT_MAP                  = 0x0109, // Enter/exit zones (40B)
-    EDGE_MAP                        = 0x0107, // Detection boundary (40B)
-    ZONE_MAP                        = 0x0114, // Zone N area map (1B ID + 40B)
-    ZONE_SENSITIVITY                = 0x0151, // Zone N sensitivity
-    ZONE_ACTIVATION_LIST            = 0x0202, // Auxiliary config (32B)
+    PRESENCE_DETECT_SENSITIVITY     = 0x0111, // Sensitivity (1-3)
+    LEFT_RIGHT_REVERSE              = 0x0122, // L/R swap (0/1/2)
+    WALL_CORNER_POS                 = 0x0170, // Mount position (1=wall, 2=left, 3=right)
+
+    // --- Grid Maps ---
+    EDGE_MAP                        = 0x0107, // Detection boundary (40B grid)
+    ENTRY_EXIT_MAP                  = 0x0109, // Enter/exit zones (40B grid)
+    INTERFERENCE_MAP                = 0x0110, // Interference sources (40B grid)
+    ZONE_MAP                        = 0x0114, // Zone N area map [ID(1) + grid(40)]
+    ZONE_SENSITIVITY                = 0x0151, // Zone N sensitivity [ID << 8 | sens]
+    ZONE_ACTIVATION_LIST            = 0x0202, // Zone activation bitmap (32B)
     DETECT_ZONE_TYPE                = 0x0152, // Zone N type
-    DEVICE_DIRECTION                = 0x0143,
-    ANGLE_SENSOR_DATA               = 0x0120,
-    LOCATION_REPORT_ENABLE          = 0x0112,
-    ZONE_PRESENCE                   = 0x0142,
-    LOCATION_TRACKING_DATA          = 0x0117,
-    THERMO_EN                       = 0x0138,
-    THERMO_DATA                     = 0x0141,
-    TEMPERATURE                     = 0x0128,
-    DETECT_ZONE_MOTION              = 0x0115,
-    MOTION_DETECT                   = 0x0103,
-    PRESENCE_DETECT                 = 0x0104,
-    ONTIME_PEOPLE_NUMBER            = 0x0165,
+    ZONE_CLOSE_AWAY_ENABLE          = 0x0153, // Zone N close/away enable
+
+    // --- Auto-Calibration ---
+    INTERFERENCE_AUTO_SET           = 0x0125, // Auto-detected interference grid (BLOB2)
+    INTERFERENCE_AUTO_ENABLE        = 0x0139, // Enable interference auto-detection (BOOL)
+    EDGE_AUTO_SET                   = 0x0149, // Auto-detected edge grid (BLOB2)
+    EDGE_AUTO_ENABLE                = 0x0150, // Enable edge auto-detection (BOOL)
+    DELETE_FALSE_TARGETS            = 0x0160, // Delete false targets
+
+    // --- Location Tracking ---
+    LOCATION_REPORT_ENABLE          = 0x0112, // Enable target streaming (0/1)
+    LOCATION_TRACKING_DATA          = 0x0117, // Per-target position data (BLOB2)
+    ANGLE_SENSOR_DATA               = 0x0120, // Accelerometer angle (reverse-read)
+    DEVICE_DIRECTION                = 0x0143, // Device orientation (reverse-read)
+
+    // --- People Counting ---
+    PEOPLE_COUNTING                 = 0x0155, // People counting data
+    PEOPLE_COUNT_REPORT_ENABLE      = 0x0158, // Enable people count reports (BOOL)
+    PEOPLE_NUMBER_ENABLE            = 0x0162, // Enable people number tracking (BOOL)
+    TARGET_TYPE_ENABLE              = 0x0163, // AI person detection (BOOL)
+    REALTIME_PEOPLE                 = 0x0164, // Real-time people data
+    ONTIME_PEOPLE_NUMBER            = 0x0165, // Periodic total person count (UINT32)
+    REALTIME_COUNT                  = 0x0166, // Real-time count
+
+    // --- Posture / Activity ---
+    TARGET_POSTURE                  = 0x0154, // Target posture reports
+    POSTURE_REPORT_ENABLE           = 0x0157, // Enable posture reporting (BOOL)
+    DWELL_TIME_ENABLE               = 0x0172, // Enable dwell tracking
+    WALK_DISTANCE_ENABLE            = 0x0173, // Enable walking distance
+    WALK_DISTANCE_ALL               = 0x0174, // Walking distance data
+
+    // --- Fall Detection ---
+    FALL_DETECTION                  = 0x0121, // Fall detection event
+    FALL_SENSITIVITY                = 0x0123, // Fall detection sensitivity
+    FALL_OVERTIME_PERIOD            = 0x0134, // Fall overtime period
+    FALL_OVERTIME_DETECTION         = 0x0135, // Fall overtime detection
+
+    // --- Sleep Monitoring ---
+    SLEEP_REPORT_ENABLE             = 0x0156, // Enable sleep reporting (BOOL)
+    SLEEP_DATA                      = 0x0159, // Sleep tracking data
+    SLEEP_STATE                     = 0x0161, // Current sleep state
+    SLEEP_PRESENCE                  = 0x0167, // Sleep zone presence
+    SLEEP_MOUNT_POSITION            = 0x0168, // Sleep zone mount position
+    SLEEP_ZONE_SIZE                 = 0x0169, // Sleep zone dimensions
+    SLEEP_IN_OUT                    = 0x0171, // Sleep zone entry/exit
+    SLEEP_EVENT                     = 0x0176, // Sleep events
+
+    // --- Temperature ---
+    TEMPERATURE                     = 0x0128, // Radar chip temperature
+    THERMO_EN                       = 0x0138, // Enable temperature reporting (BOOL)
+    THERMO_DATA                     = 0x0141, // Temperature data mode
+
     INVALID                         = 0xFFFF,
 };
 
@@ -154,6 +200,24 @@ public:
 
 protected:
   void write_state(bool state) override;
+  FP2Component *parent_{nullptr};
+};
+
+class FP2CalibrateEdgeButton : public button::Button {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void press_action() override;
+  FP2Component *parent_{nullptr};
+};
+
+class FP2CalibrateInterferenceButton : public button::Button {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void press_action() override;
   FP2Component *parent_{nullptr};
 };
 
@@ -191,6 +255,18 @@ public:
     location_report_switch_ = sw;
     sw->set_parent(this);
   }
+
+  void set_calibrate_edge_button(FP2CalibrateEdgeButton *btn) {
+    calibrate_edge_button_ = btn;
+    btn->set_parent(this);
+  }
+  void set_calibrate_interference_button(FP2CalibrateInterferenceButton *btn) {
+    calibrate_interference_button_ = btn;
+    btn->set_parent(this);
+  }
+
+  void trigger_edge_calibration();
+  void trigger_interference_calibration();
 
   void set_edge_label_grid_sensor(text_sensor::TextSensor *sensor) {
     ESP_LOGI(TAG, "set_edge_label_grid_sensor called (has_edge_grid_=%d)", has_edge_grid_);
@@ -308,6 +384,8 @@ protected:
   std::vector<FP2Zone*> zones_;
   text_sensor::TextSensor *target_tracking_sensor_{nullptr};
   FP2LocationSwitch *location_report_switch_{nullptr};
+  FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};
+  FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
   bool location_reporting_active_{false};
   bool has_zone_people_count_sensors_{false};
 

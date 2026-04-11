@@ -72,6 +72,28 @@ void FP2LocationSwitch::write_state(bool state) {
   this->publish_state(state);
 }
 
+void FP2Component::trigger_edge_calibration() {
+  ESP_LOGI(TAG, "Starting edge auto-calibration...");
+  enqueue_command_(OpCode::WRITE, AttrId::EDGE_AUTO_ENABLE, true);
+}
+
+void FP2Component::trigger_interference_calibration() {
+  ESP_LOGI(TAG, "Starting interference auto-calibration...");
+  enqueue_command_(OpCode::WRITE, AttrId::INTERFERENCE_AUTO_ENABLE, true);
+}
+
+void FP2CalibrateEdgeButton::press_action() {
+  if (this->parent_ != nullptr) {
+    this->parent_->trigger_edge_calibration();
+  }
+}
+
+void FP2CalibrateInterferenceButton::press_action() {
+  if (this->parent_ != nullptr) {
+    this->parent_->trigger_interference_calibration();
+  }
+}
+
 void FP2Component::loop() {
   while (available()) {
     uint8_t byte;
@@ -571,8 +593,46 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       handle_temperature_report_(payload);
       break;
 
+    case AttrId::EDGE_AUTO_SET:
+        // Auto-calibration result: edge boundary grid (BLOB2, 40 bytes)
+        if (payload.size() >= 5 && payload[2] == 0x06) {
+            uint16_t blob_len = (payload[3] << 8) | payload[4];
+            if (blob_len == 40 && payload.size() >= 45) {
+                ESP_LOGI(TAG, "Received auto-calibrated edge grid (%d bytes)", blob_len);
+                std::copy(payload.begin() + 5, payload.begin() + 45, edge_grid_.begin());
+                has_edge_grid_ = true;
+                // Apply to radar
+                enqueue_command_blob2_(AttrId::EDGE_MAP,
+                    std::vector<uint8_t>(edge_grid_.begin(), edge_grid_.end()));
+                // Update card sensor
+                if (edge_label_grid_sensor_ != nullptr) {
+                    edge_label_grid_sensor_->publish_state(grid_to_hex_card_format(edge_grid_));
+                }
+            }
+        }
+        break;
+
+    case AttrId::INTERFERENCE_AUTO_SET:
+        // Auto-calibration result: interference grid (BLOB2, 40 bytes)
+        if (payload.size() >= 5 && payload[2] == 0x06) {
+            uint16_t blob_len = (payload[3] << 8) | payload[4];
+            if (blob_len == 40 && payload.size() >= 45) {
+                ESP_LOGI(TAG, "Received auto-calibrated interference grid (%d bytes)", blob_len);
+                std::copy(payload.begin() + 5, payload.begin() + 45, interference_grid_.begin());
+                has_interference_grid_ = true;
+                // Apply to radar
+                enqueue_command_blob2_(AttrId::INTERFERENCE_MAP,
+                    std::vector<uint8_t>(interference_grid_.begin(), interference_grid_.end()));
+                // Update card sensor
+                if (interference_grid_sensor_ != nullptr) {
+                    interference_grid_sensor_->publish_state(grid_to_hex_card_format(interference_grid_));
+                }
+            }
+        }
+        break;
+
     default:
-      // Unknown report type - already logged in main handler
+      // Unknown report type
       ESP_LOGW(TAG, "Unhandled report 0x%04X", (uint16_t) attr_id);
       break;
   }
