@@ -44,6 +44,10 @@ struct FP2Zone : public Component {
     this->zone_people_count_sensor = sensor;
   }
 
+  void set_posture_sensor(text_sensor::TextSensor *sensor) {
+    this->posture_sensor = sensor;
+  }
+
   void publish_presence(bool state) {
     if (this->presence_sensor != nullptr) {
       this->presence_sensor->publish_state(state);
@@ -67,6 +71,7 @@ struct FP2Zone : public Component {
   esphome::binary_sensor::BinarySensor *motion_sensor{nullptr};
   esphome::text_sensor::TextSensor *map_sensor{nullptr};
   esphome::sensor::Sensor *zone_people_count_sensor{nullptr};
+  esphome::text_sensor::TextSensor *posture_sensor{nullptr};
   GridMap grid;
   uint8_t sensitivity; // 1=Low, 2=Med, 3=High
 };
@@ -154,6 +159,7 @@ enum class AttrId : uint16_t {
     REALTIME_PEOPLE                 = 0x0164, // Real-time people data
     ONTIME_PEOPLE_NUMBER            = 0x0165, // Periodic total person count (UINT32)
     REALTIME_COUNT                  = 0x0166, // Real-time count
+    ZONE_PEOPLE_NUMBER              = 0x0175, // Native per-zone count [zone_id<<8|count]
 
     // --- Posture / Activity ---
     TARGET_POSTURE                  = 0x0154, // Target posture reports
@@ -316,6 +322,9 @@ public:
   void set_people_count_sensor(sensor::Sensor *sensor) {
       people_count_sensor_ = sensor;
   }
+  void set_fall_detection_sensor(binary_sensor::BinarySensor *sensor) {
+      fall_detection_sensor_ = sensor;
+  }
   void set_radar_software_sensor(text_sensor::TextSensor *sensor) {
       radar_software_sensor_ = sensor;
   }
@@ -397,6 +406,7 @@ protected:
 
   sensor::Sensor *radar_temperature_sensor_{nullptr};
   sensor::Sensor *people_count_sensor_{nullptr};
+  binary_sensor::BinarySensor *fall_detection_sensor_{nullptr};
   text_sensor::TextSensor *radar_software_sensor_{nullptr};
 
   // Map Configuration (compile-time generated)

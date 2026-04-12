@@ -123,10 +123,11 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::PRESENCE_DETECT_SENSITIVITY, global_presence_sensitivity_);
     enqueue_command_(OpCode::WRITE, AttrId::CLOSING_SETTING, (uint8_t) 1);
     enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE, (uint16_t) 0x0001);
-    // enqueue_command_(OpCode::WRITE, AttrId::FALL_SENSITIVITY, fall_detection_sensitivity_);
+    enqueue_command_(OpCode::WRITE, AttrId::FALL_SENSITIVITY, (uint8_t) 1); // Enable fall detection
     enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_COUNT_REPORT_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, true); // BOOL
+    enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, true); // BOOL
     // enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) 0); // sleep zone mount pos
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
     enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t) 0); // dwell time enable
@@ -599,6 +600,62 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 | ((uint32_t) payload[5]) << 8
                 | ((uint32_t) payload[6]);
             ESP_LOGD(TAG, "Received realtime count report: %u", count);
+        }
+        break;
+
+    case AttrId::ZONE_PEOPLE_NUMBER:
+        // Native per-zone people count from radar
+        // Payload: [SubID 2B] [Type 0x01(UINT16)] [ZoneID] [Count]
+        if (payload.size() >= 5 && payload[2] == 0x01) {
+            uint8_t zone_id = payload[3];
+            uint8_t count = payload[4];
+            ESP_LOGD(TAG, "Zone People Number: Zone %d = %u", zone_id, count);
+
+            for (auto &z : zones_) {
+                if (z->id == zone_id && z->zone_people_count_sensor != nullptr) {
+                    float current = z->zone_people_count_sensor->get_raw_state();
+                    if (std::isnan(current) || (int)current != count) {
+                        z->zone_people_count_sensor->publish_state((float)count);
+                    }
+                    break;
+                }
+            }
+        }
+        break;
+
+    case AttrId::FALL_DETECTION:
+        // Fall event: UINT8 state byte
+        if (payload.size() >= 4 && payload[2] == 0x00) {
+            uint8_t state = payload[3];
+            ESP_LOGI(TAG, "Fall detection report: %u", state);
+            if (fall_detection_sensor_ != nullptr) {
+                fall_detection_sensor_->publish_state(state != 0);
+            }
+        }
+        break;
+
+    case AttrId::TARGET_POSTURE:
+        // Per-zone posture: UINT16 [zone_id<<8|posture]
+        if (payload.size() >= 5 && payload[2] == 0x01) {
+            uint8_t zone_id = payload[3];
+            uint8_t posture = payload[4];
+            ESP_LOGD(TAG, "Target Posture: Zone %d = %u", zone_id, posture);
+
+            const char *posture_str;
+            switch (posture) {
+                case 0: posture_str = "none"; break;
+                case 1: posture_str = "standing"; break;
+                case 2: posture_str = "sitting"; break;
+                case 3: posture_str = "lying"; break;
+                default: posture_str = "unknown"; break;
+            }
+
+            for (auto &z : zones_) {
+                if (z->id == zone_id && z->posture_sensor != nullptr) {
+                    z->posture_sensor->publish_state(posture_str);
+                    break;
+                }
+            }
         }
         break;
 
