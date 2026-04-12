@@ -116,11 +116,15 @@ void FP2Component::check_initialization_() {
     return;
   }
 
-  // We rely on handle_parsed_frame_ to set a flag or we check
-  // last_heartbeat_millis_
-  if (last_heartbeat_millis_ > 0) {
-    ESP_LOGW(TAG, "*** Heartbeat received at %u ms. Starting initialization sequence... ***",
-             last_heartbeat_millis_);
+  // Start init when we receive any valid frame from the radar.
+  // Previously waited for heartbeat (0x0102), but after OTA reboot
+  // the radar may have already passed its heartbeat phase.
+  if (last_heartbeat_millis_ > 0 || last_command_sent_millis_ > 0 ||
+      millis() > 15000) {
+    // Either: heartbeat received, or a command was already processed,
+    // or 15 seconds elapsed (radar must be alive if we got temperature reports)
+    ESP_LOGW(TAG, "*** Starting initialization (heartbeat=%u, cmd=%u, uptime=%u) ***",
+             last_heartbeat_millis_, last_command_sent_millis_, millis());
     init_done_ = true;
 
     // 1. Basic Settings
@@ -481,7 +485,12 @@ void FP2Component::handle_incoming_byte_(uint8_t byte) {
 void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
                                         const std::vector<uint8_t> &payload) {
   OpCode op = (OpCode)type;
-  //ESP_LOGI(TAG, "Received t:%d sub_id:%d", type, sub_id);
+
+  // Mark that we've received a valid frame — radar is alive
+  if (!init_done_ && last_heartbeat_millis_ == 0) {
+    last_heartbeat_millis_ = millis();
+    ESP_LOGI(TAG, "First radar frame received (op=%d, SubID=0x%04X)", type, (uint16_t)attr_id);
+  }
 
   switch (op) {
     case OpCode::ACK:
