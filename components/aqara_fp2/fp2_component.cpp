@@ -116,10 +116,13 @@ void FP2Component::check_initialization_() {
     return;
   }
 
-  // Wait for radar heartbeat (SubID 0x0102) which proves the radar
-  // has finished its own startup and is ready for configuration.
-  if (last_heartbeat_millis_ > 0) {
-    ESP_LOGW(TAG, "*** Heartbeat received at %u ms. Starting init (uptime=%u ms) ***",
+  // The radar sends heartbeats (~1Hz) during its boot phase.
+  // Wait until heartbeats have been received AND there's been a gap
+  // (no heartbeat for 3+ seconds), meaning the boot phase is ending.
+  // Also accept temperature/direction frames as proof radar is ready.
+  if (last_heartbeat_millis_ > 0 &&
+      (millis() - last_heartbeat_millis_ > 3000 || last_heartbeat_millis_ == 1)) {
+    ESP_LOGW(TAG, "*** Radar ready. Starting init (last_hb=%u ms, uptime=%u ms) ***",
              last_heartbeat_millis_, millis());
     init_done_ = true;
 
@@ -690,10 +693,10 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       break;
 
     case AttrId::TEMPERATURE:
-      // Temperature report also proves radar is alive — trigger init if heartbeat was missed
-      if (last_heartbeat_millis_ == 0) {
-        last_heartbeat_millis_ = millis();
-        ESP_LOGI(TAG, "Temperature report received before heartbeat — triggering init");
+      // Temperature report means radar finished booting — trigger init immediately
+      if (!init_done_) {
+        last_heartbeat_millis_ = 1;  // Special value: skip heartbeat gap wait
+        ESP_LOGI(TAG, "Temperature report — radar ready, triggering init");
       }
       handle_temperature_report_(payload);
       break;
@@ -841,10 +844,10 @@ void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payloa
 }
 
 void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload) {
-  // Any response/reverse-read from radar proves it's alive
-  if (last_heartbeat_millis_ == 0) {
-    last_heartbeat_millis_ = millis();
-    ESP_LOGI(TAG, "Reverse query received before heartbeat — triggering init");
+  // Direction query means radar finished booting — trigger init immediately
+  if (!init_done_) {
+    last_heartbeat_millis_ = 1;  // Special value: skip heartbeat gap wait
+    ESP_LOGI(TAG, "Reverse query — radar ready, triggering init");
   }
 
   // RESPONSE packets with only 2 bytes (just SubID) are Reverse Read Requests from the radar
