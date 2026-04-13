@@ -246,24 +246,39 @@ Key findings:
 - **Not needed** for static zones (our zones are YAML-defined at compile time)
 - Full documentation in [02-uart-protocol.md](02-uart-protocol.md)
 
-### Completed: SubID Data Formats
+### Completed: SubID Data Formats & Radar Firmware Validation
 
-**Status: SOLVED** — all priority formats decoded and implemented.
+**Status: SOLVED** — all priority formats decoded. Validated against
+decompiled TI IWR6843 radar firmware (`fp2_radar_mss.bin`, ARM:LE:32:v7).
 
-| SubID | Name | Decoded Format | Status |
-|-------|------|---------------|--------|
-| 0x0121 | FALL_DETECTION | UINT8 state (0=no fall, non-zero=fall) | Implemented |
-| 0x0154 | TARGET_POSTURE | UINT16 [zone_id, posture] (0=none,1=stand,2=sit,3=lie) | Implemented |
-| 0x0159 | SLEEP_DATA | BLOB2: 3-4× IEEE 754 float **LE** (heartRate, breathRate, heartDev, [breathDev]) — **confirmed from radar FW strings** | Implemented |
-| 0x0161 | SLEEP_STATE | UINT8 (0=awake, 1=light, 2=deep, 3=rem) | Implemented |
-| 0x0167 | SLEEP_PRESENCE | UINT8 (0=absent, non-zero=present) | Implemented |
-| 0x0171 | SLEEP_IN_OUT | UINT8 (0=out, non-zero=in) | Implemented |
-| 0x0175 | ZONE_PEOPLE_NUMBER | UINT16 [zone_id, count] | Implemented |
+| SubID | Name | Radar FW Function | Decoded Format | Validated? |
+|-------|------|-------------------|---------------|------------|
+| 0x0104 | PRESENCE_DETECT | `FUN_00026a10` | UINT8 strictly 0/1 | **YES** |
+| 0x0142 | ZONE_PRESENCE | `FUN_0000f218` | UINT16 [zone_id, 0/1] | **YES** |
+| 0x0115 | ZONE_MOTION | `FUN_0000f218` | UINT16 [zone_id, state] even/odd | **YES** |
+| 0x0175 | ZONE_PEOPLE_NUMBER | `FUN_0001f360` | UINT16 [zone_id, count] | **YES** |
+| 0x0165 | ONTIME_PEOPLE_NUMBER | `FUN_0001f360` | UINT32 (uint16 zero-ext) | **YES** |
+| 0x0121 | FALL_DETECTION | **NOT FOUND** | Not sent by radar | **ISSUE** |
+| 0x0154 | TARGET_POSTURE | `FUN_000229d0` | UINT16 [zone_id, posture] | **YES** |
+| 0x0159 | SLEEP_DATA | `FUN_00006c84` (vs) | BLOB2: 3× LE float (12 bytes) | **YES** |
+| 0x0161 | SLEEP_STATE | `FUN_00026fcc` | UINT8 (0=awake, 1=light, 2=deep only) | **YES** |
+| 0x0167 | SLEEP_PRESENCE | `FUN_00026a58` | UINT8 strictly 0/1 | **YES** |
+| 0x0171 | SLEEP_IN_OUT | `FUN_0002df1c` (vs) | UINT8 (0=exit, 1=enter) | **YES** |
+| 0x0176 | SLEEP_EVENT | `FUN_0002cf68` (vs) | UINT8 (1=light, 2=deep transition) | **YES** |
+
+Key findings from validation:
+- **0x0121 FALL_DETECTION not sent by radar** — fall data goes through 0x0155
+  (PEOPLE_COUNTING). Stock ESP32 firmware likely extracts fall events from
+  0x0155 data. Our component needs to implement 0x0155 parsing for fall events.
+- **SLEEP_STATE has no REM** — only values 0, 1, 2 produced by radar state machine
+- **0x0142 and 0x0115 sent together** from same function on zone transitions
+- **Presence values strictly 0/1** — never other non-zero values
 
 ### Priority 2: Remaining Unknown SubID Data Formats
 
 | SubID | Name | What to find |
 |-------|------|-------------|
+| 0x0155 | PEOPLE_COUNTING | Complex blob — contains fall detection data. **Priority for fall events.** |
 | 0x0164 | REALTIME_PEOPLE | Difference from ONTIME (0x0165) — seen in logs |
 | 0x0166 | REALTIME_COUNT | Also seen in logs as unhandled |
 | 0x0174 | WALK_DISTANCE_ALL | Distance data format and units |

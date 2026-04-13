@@ -74,8 +74,8 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 | `global_zone.presence` | binary_sensor | occupancy | Overall presence (SubID 0x0104: 0=empty, non-zero=occupied) |
 | `global_zone.motion` | binary_sensor | motion | Overall motion (SubID 0x0103: even=active, odd=inactive) |
 | `people_count` | sensor | measurement | Total person count (from SubID 0x0165) |
-| `fall_detection` | binary_sensor | — | Fall event (SubID 0x0121) |
-| `sleep_state` | text_sensor | — | Sleep state: none/awake/light/deep/rem (SubID 0x0161) |
+| `fall_detection` | binary_sensor | — | Fall event (SubID 0x0121) — see note below |
+| `sleep_state` | text_sensor | — | Sleep state: none/awake/light/deep (SubID 0x0161) |
 | `sleep_presence` | binary_sensor | occupancy | Sleep zone presence (SubID 0x0167) |
 | `heart_rate` | sensor | measurement (bpm) | Heart rate from sleep monitoring (SubID 0x0159)* |
 | `respiration_rate` | sensor | measurement (br/min) | Respiration rate from sleep monitoring (SubID 0x0159)* |
@@ -85,6 +85,8 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 | `location_report_switch` | switch | — | Show/hide target tracking data (see below) |
 | `calibrate_edge` | button | diagnostic | Trigger edge boundary auto-calibration |
 | `calibrate_interference` | button | diagnostic | Trigger interference auto-calibration |
+| `clear_edge` | button | diagnostic | Clear/reset room boundary calibration |
+| `clear_interference` | button | diagnostic | Clear/reset interference calibration |
 | `radar_fw_stage` | button | diagnostic | **EXPERIMENTAL** — Stage radar firmware from URL to flash |
 | `radar_ota` | button | diagnostic | **EXPERIMENTAL** — Flash staged firmware to radar via XMODEM |
 | `radar_temperature` | sensor | temperature | Radar chip temperature in Celsius |
@@ -103,7 +105,15 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 
 *Sleep data fields are IEEE 754 floats in LE byte order. Field names and
 order confirmed from radar firmware debug strings (TI Vital Signs demo).
-See [02-uart-protocol.md](02-uart-protocol.md) for full details.*
+Sleep state values 0 (awake), 1 (light), 2 (deep) confirmed — no REM state
+exists in the radar firmware. See [02-uart-protocol.md](02-uart-protocol.md)
+for full details.*
+
+**Fall detection note:** Radar firmware analysis found that SubID 0x0121 is
+**not sent by the radar directly**. Fall detection data goes through SubID
+0x0155 (PEOPLE_COUNTING). The stock ESP32 firmware likely extracts fall
+events from 0x0155 and rebroadcasts as 0x0121. Our handler for 0x0121 may
+not receive data — this needs further investigation.
 
 ### Accelerometer / Light Sensor
 
@@ -159,7 +169,7 @@ clears all zone and global states to ensure consistency:
 
 ## Auto-Calibration
 
-Two button entities trigger the radar's built-in auto-detection:
+Four button entities manage the radar's calibration:
 
 - **`calibrate_edge`** — writes `EDGE_AUTO_ENABLE` (0x0150) = true. The radar
   scans the environment and sends back `EDGE_AUTO_SET` (0x0149) with the detected
@@ -169,6 +179,12 @@ Two button entities trigger the radar's built-in auto-detection:
 - **`calibrate_interference`** — writes `INTERFERENCE_AUTO_ENABLE` (0x0139) = true.
   The radar identifies interference sources and sends back
   `INTERFERENCE_AUTO_SET` (0x0125) with the detected interference grid.
+
+- **`clear_edge`** — sends an empty (all-zero) grid to `EDGE_MAP` (0x0107),
+  resetting room boundary detection to uncalibrated. Updates the card sensor.
+
+- **`clear_interference`** — sends an empty grid to `INTERFERENCE_MAP` (0x0110),
+  clearing all interference source markers. Updates the card sensor.
 
 ## Radar Firmware OTA (EXPERIMENTAL)
 

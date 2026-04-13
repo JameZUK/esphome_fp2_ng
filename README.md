@@ -174,6 +174,10 @@ aqara_fp2:
     name: "Calibrate Room Boundaries"
   calibrate_interference:
     name: "Calibrate Interference"
+  clear_edge:
+    name: "Clear Room Boundaries"
+  clear_interference:
+    name: "Clear Interference"
 
   # Global presence/motion
   global_zone:
@@ -247,8 +251,8 @@ title: Bedroom FP2
 | Config Key | Type | Description |
 |------------|------|-------------|
 | `people_count` | sensor | Total detected person count |
-| `fall_detection` | binary_sensor | Fall detected |
-| `sleep_state` | text_sensor | none / awake / light / deep / rem |
+| `fall_detection` | binary_sensor | Fall detected (see note*) |
+| `sleep_state` | text_sensor | none / awake / light / deep |
 | `sleep_presence` | binary_sensor | Sleep zone occupancy |
 | `heart_rate` | sensor (bpm) | Heart rate from sleep monitoring |
 | `respiration_rate` | sensor (br/min) | Respiration rate from sleep monitoring |
@@ -261,6 +265,8 @@ title: Bedroom FP2
 | `location_report_switch` | switch | Show/hide target data in HA |
 | `calibrate_edge` | button | Trigger room boundary auto-calibration |
 | `calibrate_interference` | button | Trigger interference auto-calibration |
+| `clear_edge` | button | Clear/reset room boundary calibration |
+| `clear_interference` | button | Clear/reset interference calibration |
 | `radar_temperature` | sensor | Radar chip temperature (diagnostic) |
 | `radar_software_version` | text_sensor | Radar firmware build number |
 
@@ -314,6 +320,17 @@ grid: |-
   ..............
   ..............
 ```
+
+## Known Limitations
+
+- **Fall detection (SubID 0x0121)** — Radar firmware analysis confirmed this
+  SubID is **not sent by the radar directly**. Fall data goes through SubID
+  0x0155 (PEOPLE_COUNTING). The stock ESP32 firmware extracted fall events
+  from 0x0155 data. The `fall_detection` sensor may not receive updates until
+  0x0155 parsing is implemented.
+
+- **Sleep state** — Only values 0 (awake), 1 (light sleep), 2 (deep sleep)
+  exist in the radar firmware. No REM detection.
 
 ## Factory Calibration
 
