@@ -742,9 +742,13 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
 
     case AttrId::TEMPERATURE:
       // Temperature report only comes after radar finishes booting
-      if (!init_done_ && !radar_ready_) {
-        radar_ready_ = true;
-        ESP_LOGW(TAG, "Temperature received — radar boot complete, init will fire");
+      if (!init_done_) {
+        if (!radar_ready_) {
+          radar_ready_ = true;
+          ESP_LOGE(TAG, "=== TEMPERATURE: radar_ready=true, init will fire ===");
+        }
+      } else {
+        ESP_LOGD(TAG, "Temperature: init already done");
       }
       handle_temperature_report_(payload);
       break;
