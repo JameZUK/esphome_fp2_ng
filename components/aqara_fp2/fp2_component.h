@@ -227,6 +227,15 @@ protected:
   FP2Component *parent_{nullptr};
 };
 
+class FP2RadarOtaButton : public button::Button {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void press_action() override;
+  FP2Component *parent_{nullptr};
+};
+
 class FP2Component : public Component, public uart::UARTDevice {
 public:
   void setup() override;
@@ -273,9 +282,14 @@ public:
     calibrate_interference_button_ = btn;
     btn->set_parent(this);
   }
+  void set_radar_ota_button(FP2RadarOtaButton *btn) {
+    radar_ota_button_ = btn;
+    btn->set_parent(this);
+  }
 
   void trigger_edge_calibration();
   void trigger_interference_calibration();
+  void trigger_radar_ota();
 
   void set_edge_label_grid_sensor(text_sensor::TextSensor *sensor) {
     ESP_LOGI(TAG, "set_edge_label_grid_sensor called (has_edge_grid_=%d)", has_edge_grid_);
@@ -417,6 +431,7 @@ protected:
   FP2LocationSwitch *location_report_switch_{nullptr};
   FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};
   FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
+  FP2RadarOtaButton *radar_ota_button_{nullptr};
   bool location_reporting_active_{false};
   uint32_t target_tracking_interval_ms_{500};
   uint32_t last_target_publish_millis_{0};
@@ -483,6 +498,36 @@ protected:
                               const std::vector<uint8_t> &blob_content);
   void enqueue_read_(AttrId attr_id);
   void send_reverse_response_(AttrId attr_id, uint8_t byte_val);
+
+  // Radar OTA (XMODEM-1K)
+  enum class OtaState : uint8_t {
+    IDLE,
+    WAITING_HANDSHAKE,  // Waiting for 'C' from radar bootloader
+    TRANSFERRING,       // Sending XMODEM-1K blocks
+    ENDING,             // Sending EOT, waiting for ACK
+    DONE
+  };
+  OtaState ota_state_{OtaState::IDLE};
+  uint32_t ota_state_start_millis_{0};
+  uint32_t ota_firmware_size_{0};
+  uint32_t ota_firmware_offset_{0};  // Current read offset
+  uint8_t ota_block_num_{1};
+  uint8_t ota_retry_count_{0};
+  uint8_t ota_can_count_{0};
+  uint8_t ota_packet_buf_[1029];     // STX + blk + ~blk + 1024 data + CRC16
+
+  static const uint32_t MCU_OTA_FLASH_OFFSET = 0x433000;
+  static const uint32_t MCU_OTA_FLASH_SIZE = 4 * 1024 * 1024;
+  static const uint32_t XMODEM_BLOCK_SIZE = 1024;
+  static const uint32_t OTA_HANDSHAKE_TIMEOUT_MS = 20000;
+  static const uint32_t OTA_TRANSFER_TIMEOUT_MS = 3000;
+  static const uint8_t OTA_MAX_RETRIES = 5;
+
+  void ota_loop_();
+  void ota_send_current_block_();
+  void ota_send_eot_();
+  uint32_t ota_detect_firmware_size_();
+  static uint16_t xmodem_crc16_(const uint8_t *data, size_t len);
 };
 
 } // namespace aqara_fp2

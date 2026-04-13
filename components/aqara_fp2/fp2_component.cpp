@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <vector>
+#include <esp_flash.h>
 
 namespace esphome {
 namespace aqara_fp2 {
@@ -97,6 +98,12 @@ void FP2CalibrateInterferenceButton::press_action() {
 }
 
 void FP2Component::loop() {
+  // During OTA, bypass normal protocol and run XMODEM state machine
+  if (ota_state_ != OtaState::IDLE) {
+    ota_loop_();
+    return;
+  }
+
   while (available()) {
     uint8_t byte;
     read_byte(&byte);
@@ -1243,6 +1250,278 @@ void FP2Component::json_get_map_data(JsonObject root) {
         zone_obj["presence_sensor"] = zone->presence_sensor->get_name().c_str();
       }
     }
+  }
+}
+
+// --- Radar OTA (XMODEM-1K) ---
+
+void FP2RadarOtaButton::press_action() {
+  if (this->parent_ != nullptr) {
+    this->parent_->trigger_radar_ota();
+  }
+}
+
+uint16_t FP2Component::xmodem_crc16_(const uint8_t *data, size_t len) {
+  uint16_t crc = 0x0000;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= (uint16_t)data[i] << 8;
+    for (int j = 0; j < 8; j++) {
+      if (crc & 0x8000)
+        crc = (crc << 1) ^ 0x1021;
+      else
+        crc = crc << 1;
+    }
+  }
+  return crc;
+}
+
+uint32_t FP2Component::ota_detect_firmware_size_() {
+  // Scan backwards from end of mcu_ota partition to find last non-0xFF byte
+  // Read in 4K chunks from the end
+  uint8_t buf[256];
+  uint32_t offset = MCU_OTA_FLASH_SIZE;
+
+  while (offset > 0) {
+    uint32_t chunk = (offset >= sizeof(buf)) ? sizeof(buf) : offset;
+    offset -= chunk;
+    esp_err_t err = esp_flash_read(NULL, buf, MCU_OTA_FLASH_OFFSET + offset, chunk);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Flash read error at 0x%06x: 0x%x", MCU_OTA_FLASH_OFFSET + offset, err);
+      return 0;
+    }
+    // Scan backwards in this chunk
+    for (int i = chunk - 1; i >= 0; i--) {
+      if (buf[i] != 0xFF) {
+        uint32_t size = offset + i + 1;
+        // Round up to XMODEM block boundary
+        size = ((size + XMODEM_BLOCK_SIZE - 1) / XMODEM_BLOCK_SIZE) * XMODEM_BLOCK_SIZE;
+        return size;
+      }
+    }
+  }
+  return 0;  // Partition is empty
+}
+
+void FP2Component::trigger_radar_ota() {
+  if (ota_state_ != OtaState::IDLE) {
+    ESP_LOGW(TAG, "Radar OTA already in progress");
+    return;
+  }
+
+  // Detect firmware size in mcu_ota partition
+  ota_firmware_size_ = ota_detect_firmware_size_();
+  if (ota_firmware_size_ == 0) {
+    ESP_LOGE(TAG, "No radar firmware found in mcu_ota partition (offset 0x%06x)", MCU_OTA_FLASH_OFFSET);
+    return;
+  }
+
+  ESP_LOGW(TAG, "=== Starting Radar OTA: %u bytes (%u blocks) ===",
+           ota_firmware_size_, ota_firmware_size_ / XMODEM_BLOCK_SIZE);
+
+  // Send OTA trigger command via protocol
+  enqueue_command_(OpCode::WRITE, AttrId::OTA_SET_FLAG, true);
+
+  ota_firmware_offset_ = 0;
+  ota_block_num_ = 1;
+  ota_retry_count_ = 0;
+  ota_can_count_ = 0;
+  ota_state_ = OtaState::WAITING_HANDSHAKE;
+  ota_state_start_millis_ = millis();
+
+  // Flush the command queue immediately so the OTA flag gets sent
+  // before we switch to XMODEM mode
+  while (!command_queue_.empty()) {
+    process_command_queue_();
+    delay(10);
+  }
+}
+
+void FP2Component::ota_send_current_block_() {
+  // Read 1024 bytes from flash
+  uint8_t *data = &ota_packet_buf_[3];  // Skip STX, blk, ~blk
+  uint32_t read_offset = MCU_OTA_FLASH_OFFSET + ota_firmware_offset_;
+  uint32_t remaining = ota_firmware_size_ - ota_firmware_offset_;
+  uint32_t to_read = (remaining >= XMODEM_BLOCK_SIZE) ? XMODEM_BLOCK_SIZE : remaining;
+
+  esp_err_t err = esp_flash_read(NULL, data, read_offset, to_read);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Flash read error at 0x%06x", read_offset);
+    ota_state_ = OtaState::DONE;
+    return;
+  }
+
+  // Pad with 0xFF if last block is short
+  if (to_read < XMODEM_BLOCK_SIZE) {
+    memset(data + to_read, 0xFF, XMODEM_BLOCK_SIZE - to_read);
+  }
+
+  // Build XMODEM-1K packet
+  ota_packet_buf_[0] = 0x02;  // STX
+  ota_packet_buf_[1] = ota_block_num_;
+  ota_packet_buf_[2] = ~ota_block_num_;
+
+  // CRC-16/XMODEM over the 1024 data bytes only
+  uint16_t crc = xmodem_crc16_(data, XMODEM_BLOCK_SIZE);
+  ota_packet_buf_[1027] = (crc >> 8) & 0xFF;  // CRC high
+  ota_packet_buf_[1028] = crc & 0xFF;          // CRC low
+
+  write_array(ota_packet_buf_, 1029);
+
+  ESP_LOGD(TAG, "OTA: sent block %d (offset %u/%u, %d%%)",
+           ota_block_num_, ota_firmware_offset_,
+           ota_firmware_size_,
+           (int)(ota_firmware_offset_ * 100 / ota_firmware_size_));
+}
+
+void FP2Component::ota_send_eot_() {
+  uint8_t eot = 0x04;
+  write_array(&eot, 1);
+}
+
+void FP2Component::ota_loop_() {
+  uint32_t now = millis();
+
+  switch (ota_state_) {
+    case OtaState::WAITING_HANDSHAKE: {
+      // Wait for 'C' (CRC mode) or NAK from radar bootloader
+      while (available()) {
+        uint8_t byte;
+        read_byte(&byte);
+        if (byte == 'C' || byte == 0x15) {  // 'C' or NAK
+          ESP_LOGI(TAG, "OTA: radar handshake received (0x%02X), starting transfer", byte);
+          ota_state_ = OtaState::TRANSFERRING;
+          ota_state_start_millis_ = now;
+          ota_retry_count_ = 0;
+          ota_send_current_block_();
+          return;
+        } else if (byte == 0x18) {  // CAN
+          ota_can_count_++;
+          if (ota_can_count_ > 10) {
+            ESP_LOGE(TAG, "OTA: too many CAN bytes, aborting");
+            ota_state_ = OtaState::DONE;
+            return;
+          }
+        }
+      }
+      // Timeout check
+      if (now - ota_state_start_millis_ > OTA_HANDSHAKE_TIMEOUT_MS) {
+        ESP_LOGE(TAG, "OTA: handshake timeout (20s), aborting");
+        ota_state_ = OtaState::DONE;
+      }
+      break;
+    }
+
+    case OtaState::TRANSFERRING: {
+      while (available()) {
+        uint8_t byte;
+        read_byte(&byte);
+        if (byte == 0x06) {  // ACK
+          ota_retry_count_ = 0;
+          ota_firmware_offset_ += XMODEM_BLOCK_SIZE;
+          ota_block_num_++;
+
+          // Log progress every 10%
+          if ((ota_firmware_offset_ * 10 / ota_firmware_size_) !=
+              ((ota_firmware_offset_ - XMODEM_BLOCK_SIZE) * 10 / ota_firmware_size_)) {
+            ESP_LOGI(TAG, "OTA: %d%% (%u/%u bytes)",
+                     (int)(ota_firmware_offset_ * 100 / ota_firmware_size_),
+                     ota_firmware_offset_, ota_firmware_size_);
+          }
+
+          if (ota_firmware_offset_ >= ota_firmware_size_) {
+            // All data sent, transition to ending
+            ESP_LOGI(TAG, "OTA: all data sent, sending EOT");
+            ota_state_ = OtaState::ENDING;
+            ota_state_start_millis_ = now;
+            ota_retry_count_ = 0;
+            ota_send_eot_();
+          } else {
+            ota_state_start_millis_ = now;
+            ota_send_current_block_();
+          }
+          return;
+        } else if (byte == 0x15) {  // NAK — resend
+          ota_retry_count_++;
+          if (ota_retry_count_ >= OTA_MAX_RETRIES) {
+            ESP_LOGE(TAG, "OTA: max retries on block %d, aborting", ota_block_num_);
+            ota_state_ = OtaState::DONE;
+            return;
+          }
+          ESP_LOGW(TAG, "OTA: NAK on block %d, retry %d", ota_block_num_, ota_retry_count_);
+          ota_state_start_millis_ = now;
+          ota_send_current_block_();
+          return;
+        } else if (byte == 0x18) {  // CAN
+          ota_can_count_++;
+          if (ota_can_count_ > 10) {
+            ESP_LOGE(TAG, "OTA: cancelled by radar");
+            ota_state_ = OtaState::DONE;
+            return;
+          }
+        }
+      }
+      // Timeout — retransmit
+      if (now - ota_state_start_millis_ > OTA_TRANSFER_TIMEOUT_MS) {
+        ota_retry_count_++;
+        if (ota_retry_count_ >= OTA_MAX_RETRIES) {
+          ESP_LOGE(TAG, "OTA: timeout, max retries on block %d", ota_block_num_);
+          ota_state_ = OtaState::DONE;
+          return;
+        }
+        ESP_LOGW(TAG, "OTA: timeout on block %d, retry %d", ota_block_num_, ota_retry_count_);
+        ota_state_start_millis_ = now;
+        ota_send_current_block_();
+      }
+      break;
+    }
+
+    case OtaState::ENDING: {
+      while (available()) {
+        uint8_t byte;
+        read_byte(&byte);
+        if (byte == 0x06) {  // ACK
+          ESP_LOGW(TAG, "=== Radar OTA complete! Radar will restart. ===");
+          ota_state_ = OtaState::DONE;
+          return;
+        } else if (byte == 0x18) {  // CAN
+          ESP_LOGW(TAG, "OTA: CAN during EOT — treating as success");
+          ota_state_ = OtaState::DONE;
+          return;
+        }
+      }
+      if (now - ota_state_start_millis_ > OTA_TRANSFER_TIMEOUT_MS) {
+        ota_retry_count_++;
+        if (ota_retry_count_ >= OTA_MAX_RETRIES) {
+          ESP_LOGE(TAG, "OTA: EOT timeout, giving up");
+          ota_state_ = OtaState::DONE;
+          return;
+        }
+        ota_state_start_millis_ = now;
+        ota_send_eot_();
+      }
+      break;
+    }
+
+    case OtaState::DONE: {
+      ESP_LOGI(TAG, "OTA: resetting radar and resuming normal operation");
+      // Reset the radar to restart it with new firmware
+      if (reset_pin_ != nullptr) {
+        reset_pin_->digital_write(false);
+        delay(100);
+        reset_pin_->digital_write(true);
+      }
+      // Reset protocol state for fresh init
+      init_done_ = false;
+      last_heartbeat_millis_ = 0;
+      state_ = SYNC;
+      command_queue_.clear();
+      waiting_for_ack_attr_id_ = AttrId::INVALID;
+      ota_state_ = OtaState::IDLE;
+      break;
+    }
+
+    default:
+      break;
   }
 }
 
