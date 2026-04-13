@@ -116,11 +116,12 @@ void FP2Component::check_initialization_() {
     return;
   }
 
-  // Trigger init on first heartbeat — the radar accepts commands while
-  // sending heartbeats. The heartbeat never stops (it's a keep-alive).
-  if (last_heartbeat_millis_ > 0) {
-    ESP_LOGW(TAG, "*** Init triggered (heartbeat at %u ms, uptime=%u ms) ***",
-             last_heartbeat_millis_, millis());
+  // Wait for a non-heartbeat frame (temperature 0x0128 or direction 0x0143)
+  // before starting init. The radar sends heartbeats during its boot phase
+  // and does NOT ACK WRITE commands during this time. Non-heartbeat frames
+  // only arrive after the radar finishes booting and is ready for config.
+  if (last_heartbeat_millis_ == 1) {  // Special value set by temp/direction handlers
+    ESP_LOGW(TAG, "*** Radar ready — starting init (uptime=%u ms) ***", millis());
     init_done_ = true;
 
     // 1. Basic Settings
@@ -565,12 +566,16 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
   // Process specific report types
   switch (attr_id) {
     case AttrId::RADAR_SW_VERSION:  // Heartbeat
-      last_heartbeat_millis_ = millis();
+      if (last_heartbeat_millis_ != 1) {  // Don't overwrite the "ready" signal
+        last_heartbeat_millis_ = millis();
+      }
       if (payload.size() >= 4) {
-        ESP_LOGI(TAG, "Radar heartbeat: type=0x%02X version=%u (payload: %02X %02X %02X %02X%s)",
-                 payload[2], payload[3],
-                 payload[0], payload[1], payload[2], payload[3],
-                 payload.size() > 4 ? " ..." : "");
+        // Log version once, not every heartbeat
+        static bool version_logged = false;
+        if (!version_logged) {
+          ESP_LOGI(TAG, "Radar version: %u (fw 3.%u.85)", payload[3], payload[3]);
+          version_logged = true;
+        }
         if (payload[2] == 0x00) {
           auto ver_str = std::to_string(payload[3]);
           if (radar_software_sensor_ != nullptr) {
@@ -738,6 +743,11 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       break;
 
     case AttrId::TEMPERATURE:
+      // Temperature report only comes after radar finishes booting
+      if (!init_done_) {
+        last_heartbeat_millis_ = 1;  // Signal: radar ready for init
+        ESP_LOGI(TAG, "Temperature received — radar boot complete");
+      }
       handle_temperature_report_(payload);
       break;
 
@@ -884,6 +894,12 @@ void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payloa
 }
 
 void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload) {
+  // Direction queries only come after radar finishes booting
+  if (!init_done_) {
+    last_heartbeat_millis_ = 1;  // Signal: radar ready for init
+    ESP_LOGI(TAG, "Response received — radar boot complete");
+  }
+
   // RESPONSE packets with only 2 bytes (just SubID) are Reverse Read Requests from the radar
   if (payload.size() == 2) {
     handle_reverse_read_request_(attr_id);
