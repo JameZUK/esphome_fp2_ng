@@ -136,7 +136,8 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, (uint8_t) 1);
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
     enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t) 0); // dwell time enable
-    enqueue_command_(OpCode::WRITE, AttrId::WALK_DISTANCE_ENABLE, (uint8_t) 0); // walking distance enable
+    enqueue_command_(OpCode::WRITE, AttrId::WALK_DISTANCE_ENABLE,
+                     (uint8_t)(walking_distance_sensor_ != nullptr ? 1 : 0));
     enqueue_command_(OpCode::WRITE, AttrId::THERMO_EN, true);
     enqueue_command_(OpCode::WRITE, AttrId::THERMO_DATA, (uint8_t) 1);
 
@@ -802,6 +803,22 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                     z->posture_sensor->publish_state(posture_str);
                     break;
                 }
+            }
+        }
+        break;
+
+    case AttrId::WALK_DISTANCE_ALL:
+        // Walking distance: UINT32 raw value, convert to metres
+        // Stock firmware reads as uint32, converts to float via math function
+        if (payload.size() >= 7 && payload[2] == 0x02) {
+            uint32_t raw = ((uint32_t)payload[3] << 24) | ((uint32_t)payload[4] << 16)
+                         | ((uint32_t)payload[5] << 8) | payload[6];
+            // Raw value appears to be in centimetres based on stock firmware's
+            // float conversion and scaling. Convert to metres.
+            float distance_m = (float)raw / 100.0f;
+            ESP_LOGD(TAG, "Walking distance: raw=%u (%.2f m)", raw, distance_m);
+            if (walking_distance_sensor_ != nullptr) {
+                walking_distance_sensor_->publish_state(distance_m);
             }
         }
         break;

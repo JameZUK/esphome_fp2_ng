@@ -343,6 +343,9 @@ public:
   void set_body_movement_sensor(sensor::Sensor *sensor) {
       body_movement_sensor_ = sensor;
   }
+  void set_walking_distance_sensor(sensor::Sensor *sensor) {
+      walking_distance_sensor_ = sensor;
+  }
 
   void set_fp2_accel(aqara_fp2_accel::AqaraFP2Accel *accel) {
       fp2_accel_ = accel;
@@ -428,6 +431,7 @@ protected:
   sensor::Sensor *heart_rate_sensor_{nullptr};
   sensor::Sensor *respiration_rate_sensor_{nullptr};
   sensor::Sensor *body_movement_sensor_{nullptr};
+  sensor::Sensor *walking_distance_sensor_{nullptr};
 
   // Map Configuration (compile-time generated)
   std::string map_config_json_;
