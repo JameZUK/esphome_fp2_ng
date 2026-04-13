@@ -133,33 +133,6 @@ float AqaraFP2Accel::get_lux() const {
   return value;
 }
 
-// --- I2C Bus Scan ---
-
-void AqaraFP2Accel::i2c_bus_scan_() {
-  ESP_LOGI(TAG, "=== I2C Bus Scan (SDA=%d, SCL=%d) ===", sda_pin_, scl_pin_);
-
-  int found = 0;
-  for (uint8_t addr = 0x08; addr < 0x78; addr++) {
-    esp_err_t err = i2c_master_probe(bus_handle_, addr, 50);
-    if (err == ESP_OK) {
-      found++;
-      const char *desc = "unknown";
-      if (addr == ACC_SENSOR_ADDR) desc = "da218B accelerometer (known)";
-      else if (addr == 0x10) desc = "VEML7700? (ambient light)";
-      else if (addr == 0x23 || addr == 0x5C) desc = "BH1750? (ambient light)";
-      else if (addr == 0x29) desc = "TSL2561/LTR-303? (ambient light)";
-      else if (addr == 0x39) desc = "TSL2561? (ambient light)";
-      else if (addr == 0x44 || addr == 0x45) desc = "OPT3001? (ambient light)";
-      else if (addr == 0x49) desc = "TSL2561? (ambient light)";
-      else if (addr == 0x4A || addr == 0x4B) desc = "MAX44009? (ambient light)";
-      else if (addr == 0x53) desc = "LTR-553/BH1730? (ambient light)";
-
-      ESP_LOGI(TAG, "  Found device at 0x%02X — %s", addr, desc);
-    }
-  }
-
-  ESP_LOGI(TAG, "=== I2C Bus Scan complete: %d device(s) found ===", found);
-}
 
 void AqaraFP2Accel::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Aqara FP2 Accelerometer...");
@@ -294,19 +267,6 @@ void AqaraFP2Accel::dump_config() {
   ESP_LOGCONFIG(TAG, "  Calibration Z: %d", accel_corr_z_);
   ESP_LOGCONFIG(TAG, "  OPT3001 Light Sensor: %s", opt3001_initialized_ ? "YES" : "NO");
 
-  // Run I2C bus scan during dump_config so results appear in API logs
-  if (i2c_initialized_) {
-    // Suspend the accel task during scan to avoid bus contention
-    if (task_handle_ != nullptr) {
-      vTaskSuspend(task_handle_);
-    }
-
-    i2c_bus_scan_();
-
-    if (task_handle_ != nullptr) {
-      vTaskResume(task_handle_);
-    }
-  }
 }
 
 bool AqaraFP2Accel::i2c_read_accel_xyz(int16_t *x, int16_t *y, int16_t *z) {
