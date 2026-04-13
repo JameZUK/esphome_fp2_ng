@@ -159,6 +159,17 @@ class AqaraFP2Accel : public Component {
   uint8_t opt3001_read_counter_{0};
   sensor::Sensor *light_sensor_{nullptr};
 
+  // Factory NVS lux calibration (two-range piecewise linear)
+  bool lux_calibration_loaded_{false};
+  float lux_low_k_{0.0f};
+  float lux_low_b_{0.0f};
+  float lux_high_k_{0.0f};
+  float lux_high_b_{0.0f};
+  int32_t lux_low_max_{0};   // crossover point (centilux)
+
+  // Factory NVS loading
+  void load_factory_calibration_();
+
   // Static task function
   static void accel_task_(void *param);
 

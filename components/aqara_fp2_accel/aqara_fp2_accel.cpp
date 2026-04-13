@@ -2,6 +2,8 @@
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 #include <cmath>
+#include <nvs_flash.h>
+#include <nvs.h>
 
 namespace esphome {
 namespace aqara_fp2_accel {
@@ -118,10 +120,26 @@ bool AqaraFP2Accel::opt3001_read_lux_(float *lux) {
   }
 
   // Exponent = bits [15:12], Mantissa = bits [11:0]
-  // Lux = 0.01 * 2^exponent * mantissa
+  // Raw centilux = 2^exponent * mantissa (in 1/100 lux units)
   uint8_t exponent = (raw >> 12) & 0x0F;
   uint16_t mantissa = raw & 0x0FFF;
-  *lux = 0.01f * (float)(1 << exponent) * (float)mantissa;
+  float raw_centilux = (float)(1 << exponent) * (float)mantissa;
+
+  if (lux_calibration_loaded_) {
+    // Two-range piecewise linear calibration from factory NVS
+    float calibrated;
+    if (raw_centilux > (float)lux_low_max_) {
+      calibrated = raw_centilux * lux_high_k_ + lux_high_b_;
+    } else {
+      calibrated = raw_centilux * lux_low_k_ + lux_low_b_;
+    }
+    if (calibrated < 0.0f) calibrated = 0.0f;
+    if (calibrated > 83000.0f) calibrated = 83000.0f;
+    *lux = calibrated / 100.0f;  // centilux → lux
+  } else {
+    // No calibration: raw centilux to lux
+    *lux = raw_centilux * 0.01f;
+  }
   return true;
 }
 
@@ -131,6 +149,64 @@ float AqaraFP2Accel::get_lux() const {
   float value = lux_value_;
   xSemaphoreGive(mutex_);
   return value;
+}
+
+void AqaraFP2Accel::load_factory_calibration_() {
+  esp_err_t err = nvs_flash_init_partition("fctry");
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Factory NVS partition not available (0x%x) — using defaults", err);
+    return;
+  }
+
+  nvs_handle_t handle;
+  err = nvs_open_from_partition("fctry", "fac", NVS_READONLY, &handle);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to open factory NVS namespace 'fac' (0x%x)", err);
+    return;
+  }
+
+  auto read_i16 = [&](const char *key, int16_t *out) -> bool {
+    size_t size = sizeof(int16_t);
+    return nvs_get_blob(handle, key, out, &size) == ESP_OK;
+  };
+  auto read_i32 = [&](const char *key, int32_t *out) -> bool {
+    size_t size = sizeof(int32_t);
+    return nvs_get_blob(handle, key, out, &size) == ESP_OK;
+  };
+
+  // Lux calibration coefficients
+  int16_t low_k = 0, low_b = 0, high_k = 0, high_b = 0;
+  int32_t low_max = 0;
+  bool have_lux = true;
+  have_lux &= read_i16("lux_low_k", &low_k);
+  have_lux &= read_i16("lux_low_b", &low_b);
+  have_lux &= read_i16("lux_high_k", &high_k);
+  have_lux &= read_i16("lux_high_b", &high_b);
+  have_lux &= read_i32("lux_low_max", &low_max);
+
+  if (have_lux && low_k != 0) {
+    lux_low_k_ = (float)low_k / 1000.0f;
+    lux_low_b_ = (float)low_b / 10.0f;
+    lux_high_k_ = (float)high_k / 1000.0f;
+    lux_high_b_ = (float)high_b / 10.0f;
+    lux_low_max_ = low_max;
+    lux_calibration_loaded_ = true;
+    ESP_LOGI(TAG, "Factory lux calibration: low k=%.3f b=%.1f, high k=%.3f b=%.1f, crossover=%d",
+             lux_low_k_, lux_low_b_, lux_high_k_, lux_high_b_, lux_low_max_);
+  } else {
+    ESP_LOGW(TAG, "No factory lux calibration — using raw OPT3001 values");
+  }
+
+  // Accelerometer corrections
+  int16_t cx = 0, cy = 0, cz = 0;
+  if (read_i16("corr_x", &cx) && read_i16("corr_y", &cy) && read_i16("corr_z", &cz)) {
+    accel_corr_x_ = cx;
+    accel_corr_y_ = cy;
+    accel_corr_z_ = cz;
+    ESP_LOGI(TAG, "Factory accel corrections: x=%d y=%d z=%d", cx, cy, cz);
+  }
+
+  nvs_close(handle);
 }
 
 
@@ -151,6 +227,9 @@ void AqaraFP2Accel::setup() {
   if (!opt3001_init_()) {
     ESP_LOGW(TAG, "OPT3001 light sensor not available");
   }
+
+  // Load factory calibration from NVS (lux coefficients + accel corrections)
+  load_factory_calibration_();
 
   // Create mutex for thread-safe access
   mutex_ = xSemaphoreCreateMutex();
@@ -266,6 +345,11 @@ void AqaraFP2Accel::dump_config() {
   ESP_LOGCONFIG(TAG, "  Calibration Y: %d", accel_corr_y_);
   ESP_LOGCONFIG(TAG, "  Calibration Z: %d", accel_corr_z_);
   ESP_LOGCONFIG(TAG, "  OPT3001 Light Sensor: %s", opt3001_initialized_ ? "YES" : "NO");
+  ESP_LOGCONFIG(TAG, "  Lux Calibration: %s", lux_calibration_loaded_ ? "factory NVS" : "uncalibrated");
+  if (lux_calibration_loaded_) {
+    ESP_LOGCONFIG(TAG, "    Low:  k=%.3f b=%.1f (<%d centilux)", lux_low_k_, lux_low_b_, lux_low_max_);
+    ESP_LOGCONFIG(TAG, "    High: k=%.3f b=%.1f (>%d centilux)", lux_high_k_, lux_high_b_, lux_low_max_);
+  }
 
 }
 
