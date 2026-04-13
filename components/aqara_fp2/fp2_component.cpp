@@ -107,21 +107,13 @@ void FP2Component::loop() {
 }
 
 void FP2Component::check_initialization_() {
-  if (init_done_) {
-    // Log queue status periodically for debugging
-    if (!command_queue_.empty() && millis() % 10000 < 20) {
-      ESP_LOGD(TAG, "Command queue: %d pending, waiting ACK for 0x%04X",
-               command_queue_.size(), (uint16_t)waiting_for_ack_attr_id_);
-    }
+  if (init_done_)
     return;
-  }
 
-  // Wait for a non-heartbeat frame (temperature 0x0128 or direction 0x0143)
-  // before starting init. The radar sends heartbeats during its boot phase
-  // and does NOT ACK WRITE commands during this time. Non-heartbeat frames
-  // only arrive after the radar finishes booting and is ready for config.
-  if (radar_ready_) {
-    ESP_LOGW(TAG, "*** Radar ready — starting init (uptime=%u ms) ***", millis());
+  // We rely on handle_parsed_frame_ to set a flag or we check
+  // last_heartbeat_millis_
+  if (last_heartbeat_millis_ > 0) {
+    ESP_LOGI(TAG, "Heartbeat received. Starting initialization sequence...");
     init_done_ = true;
 
     // 1. Basic Settings
@@ -131,11 +123,10 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::PRESENCE_DETECT_SENSITIVITY, global_presence_sensitivity_);
     enqueue_command_(OpCode::WRITE, AttrId::CLOSING_SETTING, (uint8_t) 1);
     enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE, (uint16_t) 0x0001);
-    // enqueue_command_(OpCode::WRITE, AttrId::FALL_SENSITIVITY, (uint8_t) 1); // TODO: stalls queue
+    // enqueue_command_(OpCode::WRITE, AttrId::FALL_SENSITIVITY, fall_detection_sensitivity_);
     enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_COUNT_REPORT_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, true); // BOOL
-    // enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, true); // TODO: stalls queue
     // enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) 0); // sleep zone mount pos
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
     enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t) 0); // dwell time enable
@@ -164,7 +155,8 @@ void FP2Component::check_initialization_() {
       // will not send global presence/motion reports (0x0103, 0x0104)
       ESP_LOGI(TAG, "No edge_grid configured, sending full-coverage default");
       GridMap full_grid;
-      // Set 14 active rows (0-13) with cols 2-15 active: 0x3FFC
+      // Set all 14 active rows (0-13) to full width: cols 2-15 active
+      // Binary: 0011 1111 1111 1100 = 0x3FFC
       full_grid.fill(0);
       for (int r = 0; r < 14; r++) {
         full_grid[r * 2] = 0x3F;
@@ -310,10 +302,6 @@ void FP2Component::send_next_command_() {
   auto &cmd = command_queue_.front();
   static uint8_t next_tx_seq = 0;
 
-  ESP_LOGD(TAG, "TX: op=%d SubID=0x%04X len=%d retry=%d queue=%d",
-           (int)cmd.type, (uint16_t)cmd.attr_id, cmd.data.size(),
-           cmd.retry_count, command_queue_.size());
-
   // Build frame: [Sync][Ver][Ver][Seq][Op][Len][Len][Check][Payload][CRC][CRC]
   std::vector<uint8_t> frame;
   frame.push_back(0x55);  // Sync
@@ -353,10 +341,6 @@ void FP2Component::send_next_command_() {
 }
 
 void FP2Component::send_ack_(AttrId attr_id) {
-  // ACKs must be sent immediately — not queued. If a WRITE command is
-  // waiting for an ACK from the radar, the queue is blocked and queued
-  // ACKs never get sent. The radar expects timely ACKs for its reports
-  // and will stop cooperating if they don't arrive.
   FP2Command cmd;
   cmd.type = OpCode::ACK;
   cmd.attr_id = attr_id;
@@ -368,53 +352,23 @@ void FP2Component::send_ack_(AttrId attr_id) {
   cmd.data.push_back(((uint16_t) attr_id) & 0xFF);
   cmd.data.push_back(0x03);  // DataType: VOID
 
-  // Build and send frame immediately (bypass queue)
-  static uint8_t ack_seq = 0x80;  // ACKs use separate sequence space
-  std::vector<uint8_t> frame;
-  frame.push_back(0x55);
-  frame.push_back(0x00);
-  frame.push_back(0x01);
-  frame.push_back(ack_seq++);
-  frame.push_back((uint8_t)cmd.type);
-  uint16_t len = cmd.data.size();
-  frame.push_back((len >> 8) & 0xFF);
-  frame.push_back(len & 0xFF);
-  uint8_t sum = 0;
-  for (int i = 0; i < 7; i++) sum += frame[i];
-  frame.push_back((uint8_t)(~((sum - 1))));
-  frame.insert(frame.end(), cmd.data.begin(), cmd.data.end());
-  uint16_t crc = crc16(frame.data(), frame.size());
-  frame.push_back(crc & 0xFF);
-  frame.push_back((crc >> 8) & 0xFF);
-  write_array(frame);
+  // ACKs are high priority - push to front of queue
+  command_queue_.push_front(cmd);
 }
 
 void FP2Component::send_reverse_response_(AttrId attr_id, uint8_t byte_val) {
-  // Reverse-read responses must also be sent immediately, same as ACKs.
-  std::vector<uint8_t> payload;
-  payload.push_back((((uint16_t) attr_id) >> 8) & 0xFF);
-  payload.push_back(((uint16_t) attr_id) & 0xFF);
-  payload.push_back(0x00);  // DataType: UINT8
-  payload.push_back(byte_val);
+  FP2Command cmd;
+  cmd.type = OpCode::READ;  // Reverse Read Response uses READ opcode
+  cmd.attr_id = attr_id;
+  cmd.retry_count = 0;
 
-  static uint8_t resp_seq = 0xC0;
-  std::vector<uint8_t> frame;
-  frame.push_back(0x55);
-  frame.push_back(0x00);
-  frame.push_back(0x01);
-  frame.push_back(resp_seq++);
-  frame.push_back((uint8_t)OpCode::READ);
-  uint16_t len = payload.size();
-  frame.push_back((len >> 8) & 0xFF);
-  frame.push_back(len & 0xFF);
-  uint8_t sum = 0;
-  for (int i = 0; i < 7; i++) sum += frame[i];
-  frame.push_back((uint8_t)(~((sum - 1))));
-  frame.insert(frame.end(), payload.begin(), payload.end());
-  uint16_t crc = crc16(frame.data(), frame.size());
-  frame.push_back(crc & 0xFF);
-  frame.push_back((crc >> 8) & 0xFF);
-  write_array(frame);
+  // Payload: [SubID 2 bytes] [DataType UINT8] [Value 1 byte]
+  cmd.data.push_back((((uint16_t) attr_id) >> 8) & 0xFF);
+  cmd.data.push_back(((uint16_t) attr_id) & 0xFF);
+  cmd.data.push_back(0x00);  // DataType: UINT8
+  cmd.data.push_back(byte_val);
+
+  command_queue_.push_back(cmd);
 }
 
 void FP2Component::handle_incoming_byte_(uint8_t byte) {
@@ -524,9 +478,7 @@ void FP2Component::handle_incoming_byte_(uint8_t byte) {
 void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
                                         const std::vector<uint8_t> &payload) {
   OpCode op = (OpCode)type;
-
-  // Log all received frames for debugging
-  ESP_LOGD(TAG, "Frame: op=%d SubID=0x%04X len=%d", type, (uint16_t)attr_id, payload.size());
+  //ESP_LOGI(TAG, "Received t:%d sub_id:%d", type, sub_id);
 
   switch (op) {
     case OpCode::ACK:
@@ -567,20 +519,12 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
   switch (attr_id) {
     case AttrId::RADAR_SW_VERSION:  // Heartbeat
       last_heartbeat_millis_ = millis();
-      if (payload.size() >= 4) {
-        // Log version once, not every heartbeat
-        static bool version_logged = false;
-        if (!version_logged) {
-          ESP_LOGI(TAG, "Radar version: %u (fw 3.%u.85)", payload[3], payload[3]);
-          version_logged = true;
-        }
-        if (payload[2] == 0x00) {
-          auto ver_str = std::to_string(payload[3]);
-          if (radar_software_sensor_ != nullptr) {
-              if (radar_software_sensor_->state != ver_str) {
-                  radar_software_sensor_->publish_state(ver_str);
-              }
-          }
+      if (payload.size() == 4 && payload[2] == 0x00) {
+        auto ver_str = std::to_string(payload[3]);
+        if (radar_software_sensor_ != nullptr) {
+            if (radar_software_sensor_->state != ver_str) {
+                radar_software_sensor_->publish_state(ver_str);
+            }
         }
       }
       break;
@@ -663,62 +607,6 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         }
         break;
 
-    case AttrId::ZONE_PEOPLE_NUMBER:
-        // Native per-zone people count from radar
-        // Payload: [SubID 2B] [Type 0x01(UINT16)] [ZoneID] [Count]
-        if (payload.size() >= 5 && payload[2] == 0x01) {
-            uint8_t zone_id = payload[3];
-            uint8_t count = payload[4];
-            ESP_LOGD(TAG, "Zone People Number: Zone %d = %u", zone_id, count);
-
-            for (auto &z : zones_) {
-                if (z->id == zone_id && z->zone_people_count_sensor != nullptr) {
-                    float current = z->zone_people_count_sensor->get_raw_state();
-                    if (std::isnan(current) || (int)current != count) {
-                        z->zone_people_count_sensor->publish_state((float)count);
-                    }
-                    break;
-                }
-            }
-        }
-        break;
-
-    case AttrId::FALL_DETECTION:
-        // Fall event: UINT8 state byte
-        if (payload.size() >= 4 && payload[2] == 0x00) {
-            uint8_t state = payload[3];
-            ESP_LOGI(TAG, "Fall detection report: %u", state);
-            if (fall_detection_sensor_ != nullptr) {
-                fall_detection_sensor_->publish_state(state != 0);
-            }
-        }
-        break;
-
-    case AttrId::TARGET_POSTURE:
-        // Per-zone posture: UINT16 [zone_id<<8|posture]
-        if (payload.size() >= 5 && payload[2] == 0x01) {
-            uint8_t zone_id = payload[3];
-            uint8_t posture = payload[4];
-            ESP_LOGD(TAG, "Target Posture: Zone %d = %u", zone_id, posture);
-
-            const char *posture_str;
-            switch (posture) {
-                case 0: posture_str = "none"; break;
-                case 1: posture_str = "standing"; break;
-                case 2: posture_str = "sitting"; break;
-                case 3: posture_str = "lying"; break;
-                default: posture_str = "unknown"; break;
-            }
-
-            for (auto &z : zones_) {
-                if (z->id == zone_id && z->posture_sensor != nullptr) {
-                    z->posture_sensor->publish_state(posture_str);
-                    break;
-                }
-            }
-        }
-        break;
-
     case AttrId::ZONE_PRESENCE:  // Zone Presence
         // Payload: [SubID 2B] [Type 0x01(UINT16)] [ValH] [ValL]
         // ValH = ZoneID, ValL = State (1=Occ, 0=Empty)
@@ -741,15 +629,6 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       break;
 
     case AttrId::TEMPERATURE:
-      // Temperature report only comes after radar finishes booting
-      if (!init_done_) {
-        if (!radar_ready_) {
-          radar_ready_ = true;
-          ESP_LOGE(TAG, "=== TEMPERATURE: radar_ready=true, init will fire ===");
-        }
-      } else {
-        ESP_LOGD(TAG, "Temperature: init already done");
-      }
       handle_temperature_report_(payload);
       break;
 
@@ -896,12 +775,6 @@ void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payloa
 }
 
 void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload) {
-  // Direction queries only come after radar finishes booting
-  if (!init_done_ && !radar_ready_) {
-    radar_ready_ = true;
-    ESP_LOGW(TAG, "Direction query received — radar boot complete, init will fire");
-  }
-
   // RESPONSE packets with only 2 bytes (just SubID) are Reverse Read Requests from the radar
   if (payload.size() == 2) {
     handle_reverse_read_request_(attr_id);
