@@ -59,9 +59,10 @@ void FP2Component::perform_reset_() {
 
 void FP2Component::set_location_reporting_enabled(bool enabled) {
   this->location_reporting_active_ = enabled;
-  this->enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, (uint8_t)(enabled ? 1 : 0));
+  // Only toggle the publish flag — do NOT send LOCATION_REPORT_ENABLE=0 to
+  // the radar because people counting depends on location tracking internally.
+  // The radar always has location reporting enabled (set in init).
   if (!enabled && this->target_tracking_sensor_ != nullptr) {
-    // Clear the sensor state when location reporting is disabled
     this->target_tracking_sensor_->set_has_state(false);
   }
 }
@@ -129,6 +130,10 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, true); // BOOL
+    // Location reporting must stay enabled at the radar level — people counting
+    // depends on it internally. The Report Targets switch controls whether
+    // target data is published to the text sensor, not whether the radar tracks.
+    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, (uint8_t) 1);
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
     enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t) 0); // dwell time enable
     enqueue_command_(OpCode::WRITE, AttrId::WALK_DISTANCE_ENABLE, (uint8_t) 0); // walking distance enable
