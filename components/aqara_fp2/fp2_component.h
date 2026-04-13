@@ -290,6 +290,7 @@ public:
   void trigger_edge_calibration();
   void trigger_interference_calibration();
   void trigger_radar_ota();
+  void set_radar_firmware_url(const std::string &url) { radar_firmware_url_ = url; }
 
   void set_edge_label_grid_sensor(text_sensor::TextSensor *sensor) {
     ESP_LOGI(TAG, "set_edge_label_grid_sensor called (has_edge_grid_=%d)", has_edge_grid_);
@@ -527,7 +528,9 @@ protected:
   void ota_send_current_block_();
   void ota_send_eot_();
   uint32_t ota_detect_firmware_size_();
+  bool ota_download_firmware_();
   static uint16_t xmodem_crc16_(const uint8_t *data, size_t len);
+  std::string radar_firmware_url_;
 };
 
 } // namespace aqara_fp2

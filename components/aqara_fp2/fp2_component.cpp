@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <vector>
 #include <esp_flash.h>
+#include <esp_http_client.h>
 
 namespace esphome {
 namespace aqara_fp2 {
@@ -1315,6 +1316,125 @@ uint32_t FP2Component::ota_detect_firmware_size_() {
   return 0;  // Partition is empty
 }
 
+bool FP2Component::ota_download_firmware_() {
+  if (radar_firmware_url_.empty()) {
+    ESP_LOGE(TAG, "OTA: no radar_firmware_url configured");
+    return false;
+  }
+
+  ESP_LOGI(TAG, "OTA: downloading firmware from %s", radar_firmware_url_.c_str());
+
+  esp_http_client_config_t config = {};
+  config.url = radar_firmware_url_.c_str();
+  config.timeout_ms = 30000;
+  config.buffer_size = 4096;
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (client == nullptr) {
+    ESP_LOGE(TAG, "OTA: failed to init HTTP client");
+    return false;
+  }
+
+  esp_err_t err = esp_http_client_open(client, 0);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "OTA: HTTP open failed (0x%x)", err);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  int content_length = esp_http_client_fetch_headers(client);
+  int status = esp_http_client_get_status_code(client);
+  if (status != 200) {
+    ESP_LOGE(TAG, "OTA: HTTP status %d", status);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  if (content_length <= 0) {
+    ESP_LOGE(TAG, "OTA: unknown content length");
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  if ((uint32_t)content_length > MCU_OTA_FLASH_SIZE) {
+    ESP_LOGE(TAG, "OTA: firmware too large (%d bytes, max %u)", content_length, MCU_OTA_FLASH_SIZE);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  ESP_LOGI(TAG, "OTA: firmware size %d bytes, erasing flash...", content_length);
+
+  // Erase the flash region (must be 4KB-aligned)
+  uint32_t erase_size = ((content_length + 4095) / 4096) * 4096;
+  err = esp_flash_erase_region(NULL, MCU_OTA_FLASH_OFFSET, erase_size);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "OTA: flash erase failed (0x%x)", err);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  // Stream firmware to flash in chunks
+  uint8_t buf[4096];
+  uint32_t written = 0;
+  bool header_validated = false;
+  int last_pct = -1;
+
+  while (written < (uint32_t)content_length) {
+    int to_read = std::min((int)sizeof(buf), content_length - (int)written);
+    int read = esp_http_client_read(client, (char *)buf, to_read);
+    if (read <= 0) {
+      ESP_LOGE(TAG, "OTA: download stalled at %u/%d bytes", written, content_length);
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+      return false;
+    }
+
+    // Validate MSTR header on first chunk
+    if (!header_validated) {
+      if (read < 4 || buf[0] != 'M' || buf[1] != 'S' || buf[2] != 'T' || buf[3] != 'R') {
+        ESP_LOGE(TAG, "OTA: downloaded file has invalid header (expected MSTR)");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return false;
+      }
+      header_validated = true;
+    }
+
+    err = esp_flash_write(NULL, buf, MCU_OTA_FLASH_OFFSET + written, read);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "OTA: flash write failed at offset %u (0x%x)", written, err);
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+      return false;
+    }
+
+    written += read;
+    int pct = (int)(written * 100 / content_length);
+    if (pct / 10 != last_pct / 10) {
+      ESP_LOGI(TAG, "OTA: download %d%% (%u/%d bytes)", pct, written, content_length);
+      last_pct = pct;
+    }
+  }
+
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
+
+  // Verify what we wrote by re-reading the header
+  uint8_t verify[4];
+  esp_flash_read(NULL, verify, MCU_OTA_FLASH_OFFSET, 4);
+  if (verify[0] != 'M' || verify[1] != 'S' || verify[2] != 'T' || verify[3] != 'R') {
+    ESP_LOGE(TAG, "OTA: flash verification failed!");
+    return false;
+  }
+
+  ESP_LOGI(TAG, "OTA: firmware downloaded and verified (%u bytes)", written);
+  return true;
+}
+
 void FP2Component::trigger_radar_ota() {
   if (ota_state_ != OtaState::IDLE) {
     ESP_LOGW(TAG, "Radar OTA already in progress");
@@ -1323,12 +1443,24 @@ void FP2Component::trigger_radar_ota() {
 
   ESP_LOGW(TAG, "=== Radar OTA: validating firmware ===");
 
-  // Detect and validate firmware in mcu_ota partition
+  // Check if firmware exists on flash
   ota_firmware_size_ = ota_detect_firmware_size_();
+
+  // If no firmware on flash but URL configured, download it
+  if (ota_firmware_size_ == 0 && !radar_firmware_url_.empty()) {
+    ESP_LOGI(TAG, "OTA: no firmware on flash, downloading from configured URL...");
+    if (!ota_download_firmware_()) {
+      ESP_LOGE(TAG, "OTA ABORTED: firmware download failed");
+      return;
+    }
+    ota_firmware_size_ = ota_detect_firmware_size_();
+  }
+
   if (ota_firmware_size_ == 0) {
-    ESP_LOGE(TAG, "OTA ABORTED: no valid radar firmware in flash (offset 0x%06x).", MCU_OTA_FLASH_OFFSET);
-    ESP_LOGE(TAG, "The mcu_ota partition may have been erased during ESPHome flashing.");
-    ESP_LOGE(TAG, "A valid TI IWR6843 firmware file (starting with MSTR header) is required.");
+    ESP_LOGE(TAG, "OTA ABORTED: no valid radar firmware available.");
+    if (radar_firmware_url_.empty()) {
+      ESP_LOGE(TAG, "Configure 'radar_firmware_url' in YAML to enable firmware download.");
+    }
     return;
   }
 

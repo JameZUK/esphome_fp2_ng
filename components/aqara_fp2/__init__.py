@@ -53,6 +53,7 @@ CONF_SENSITIVITY = "sensitivity"
 
 # New Options
 CONF_RADAR_RESET_PIN = "radar_reset_pin"
+CONF_RADAR_FIRMWARE_URL = "radar_firmware_url"
 CONF_PRESENCE_SENSITIVITY = "presence_sensitivity"
 CONF_FALL_DETECTION_SENSITIVITY = "fall_detection_sensitivity"
 CONF_PEOPLE_COUNTING_REPORT_ENABLE = "people_counting_report_enable"
@@ -201,6 +202,7 @@ CONFIG_SCHEMA = (
             cv.Required("accel"): cv.use_id(AqaraFP2Accel),
 
             cv.Optional(CONF_RADAR_RESET_PIN): pins.gpio_output_pin_schema,
+            cv.Optional(CONF_RADAR_FIRMWARE_URL): cv.url,
             cv.Optional(CONF_MOUNTING_POSITION, default="left_corner"): cv.enum(
                 MOUNTING_POSITIONS
             ),
@@ -352,6 +354,9 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await uart.register_uart_device(var, config)
+
+    if CONF_RADAR_FIRMWARE_URL in config:
+        cg.add(var.set_radar_firmware_url(config[CONF_RADAR_FIRMWARE_URL]))
 
     if CONF_RADAR_RESET_PIN in config:
         reset_pin = await cg.gpio_pin_expression(config[CONF_RADAR_RESET_PIN])
