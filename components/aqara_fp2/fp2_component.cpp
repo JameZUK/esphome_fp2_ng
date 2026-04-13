@@ -239,6 +239,8 @@ void FP2Component::check_initialization_() {
 
     if (global_presence_sensor_ != nullptr) global_presence_sensor_->publish_state(false);
     if (global_motion_sensor_ != nullptr) global_motion_sensor_->publish_state(false);
+    if (people_count_sensor_ != nullptr) people_count_sensor_->publish_state(0);
+    if (fall_detection_sensor_ != nullptr) fall_detection_sensor_->publish_state(false);
 
     // Clear target tracking state - no targets after reset
     if (target_tracking_sensor_ != nullptr) {
