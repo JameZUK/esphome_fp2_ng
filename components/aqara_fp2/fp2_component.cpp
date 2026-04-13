@@ -231,10 +231,13 @@ void FP2Component::check_initialization_() {
 
     // 7. Publish known initial states after reset
     // After radar reset, we know there is no occupancy/motion detected yet
-    ESP_LOGI(TAG, "Publishing initial zone states (no presence/motion after reset)");
+    ESP_LOGI(TAG, "Publishing initial states (no occupancy after reset)");
     for (const auto &zone : zones_) {
       zone->publish_presence(false);
       zone->publish_motion(false);
+      if (zone->posture_sensor != nullptr) {
+        zone->posture_sensor->publish_state("none");
+      }
     }
 
     if (global_presence_sensor_ != nullptr) global_presence_sensor_->publish_state(false);
@@ -538,14 +541,18 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::DETECT_ZONE_MOTION:
+        // Payload: UINT16 [zone_id, state]
+        // Stock firmware stores raw value; we map to binary
         if (payload.size() == 5 && payload[2] == 0x01) {
             uint8_t zone_id = payload[3];
             uint8_t state = payload[4];
+            if (zone_id == 0) break;  // Zone 0 is invalid (stock rejects it)
             ESP_LOGD(TAG, "Zone Motion Report: Zone %u = %u", zone_id, state);
 
             for (auto &z : zones_) {
               if (z->id == zone_id) {
-                z->publish_motion(state == 1);
+                // State values: 0=motion start, even=active, odd=inactive
+                z->publish_motion(state % 2 == 0);
                 break;
               }
             }
@@ -553,22 +560,45 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::MOTION_DETECT:
+        // Stock firmware: values 0,2,4,6,7 are "active" motion states
+        // Value 0 = motion entering, 2 = active, 4 = exiting
+        // Odd values (1,3,5) = no motion / inactive
         if (payload.size() == 4 && payload[2]  == 0x00) {
             uint8_t state = payload[3];
             if (global_motion_sensor_ != nullptr) {
-                global_motion_sensor_->publish_state(state == 0);
+                // Even states (0,2,4,6) = motion active; odd states = inactive
+                global_motion_sensor_->publish_state(state % 2 == 0);
             }
-            ESP_LOGI(TAG, "Received global motion report: %u", state);
+            ESP_LOGD(TAG, "Global motion report: state=%u active=%s",
+                     state, (state % 2 == 0) ? "yes" : "no");
         }
         break;
 
     case AttrId::PRESENCE_DETECT:
         if (payload.size() == 4 && payload[2]  == 0x00) {
             uint8_t state = payload[3];
+            bool present = state != 0;
             if (global_presence_sensor_ != nullptr) {
-                global_presence_sensor_->publish_state(state != 0);
+                global_presence_sensor_->publish_state(present);
             }
-            ESP_LOGI(TAG, "Received global presence report: %u", state);
+            ESP_LOGD(TAG, "Global presence report: state=%u present=%s",
+                     state, present ? "yes" : "no");
+            // Stock firmware: when presence goes OFF, clear all zone states
+            if (!present) {
+                for (auto &z : zones_) {
+                    z->publish_presence(false);
+                    z->publish_motion(false);
+                    if (z->zone_people_count_sensor != nullptr) {
+                        z->zone_people_count_sensor->publish_state(0);
+                    }
+                    if (z->posture_sensor != nullptr) {
+                        z->posture_sensor->publish_state("none");
+                    }
+                }
+                if (people_count_sensor_ != nullptr) {
+                    people_count_sensor_->publish_state(0);
+                }
+            }
         }
         break;
 
@@ -614,6 +644,7 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         if (payload.size() >= 5 && payload[2] == 0x01) {
             uint8_t zone_id = payload[3];
             uint8_t count = payload[4];
+            if (zone_id == 0) break;  // Zone 0 is invalid
             ESP_LOGD(TAG, "Zone People Number: Zone %d = %u", zone_id, count);
             for (auto &z : zones_) {
                 if (z->id == zone_id && z->zone_people_count_sensor != nullptr) {
@@ -641,6 +672,7 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         if (payload.size() >= 5 && payload[2] == 0x01) {
             uint8_t zone_id = payload[3];
             uint8_t posture = payload[4];
+            if (zone_id == 0) break;  // Zone 0 is invalid
             const char *posture_str;
             switch (posture) {
                 case 0: posture_str = "none"; break;
@@ -660,16 +692,16 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::ZONE_PRESENCE:  // Zone Presence
-        // Payload: [SubID 2B] [Type 0x01(UINT16)] [ValH] [ValL]
-        // ValH = ZoneID, ValL = State (1=Occ, 0=Empty)
+        // Payload: [SubID 2B] [Type 0x01(UINT16)] [ZoneID] [State]
         if (payload.size() >= 5 && payload[2] == 0x01) {
             uint8_t zone_id = payload[3];
             uint8_t state = payload[4];
+            if (zone_id == 0) break;  // Zone 0 is invalid (stock rejects it)
             ESP_LOGD(TAG, "Zone Presence Report: Zone %d = %s", zone_id, state ? "ON" : "OFF");
 
             for (auto &z : zones_) {
                 if (z->id == zone_id) {
-                    z->publish_presence(state == 1);
+                    z->publish_presence(state != 0);
                     break;
                 }
             }
