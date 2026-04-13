@@ -754,12 +754,12 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::SLEEP_DATA:
-        // Sleep tracking data: BLOB2 containing 3 fields
-        // From Aqara cloud API: heart rate (bpm), respiration rate (rpm), body movement
-        // Stock firmware copies raw bytes into 3 x uint32 via memcpy.
-        // BLOB2 content is in the radar's native little-endian byte order
-        // (TI IWR6843 is ARM Cortex-R4, LE), unlike the typed protocol
-        // fields which use big-endian.
+        // Sleep tracking data: BLOB2 containing 3 x uint32 (12 bytes).
+        // Stock firmware (radar_sleep_data @ 0x400e47c4) does a raw memcpy
+        // into 3 x uint32 at Ram400d1484 — confirmed LE byte order.
+        // Field order [heart_rate, resp_rate, body_movement] is from the
+        // Aqara cloud API docs, NOT verified from the firmware binary.
+        // TODO: validate field order with real sleep data.
         if (payload.size() >= 5 && payload[2] == 0x06) {
             uint16_t blob_len = (payload[3] << 8) | payload[4];
             if (blob_len >= 12 && payload.size() >= 17) {
