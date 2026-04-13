@@ -1262,6 +1262,32 @@ void FP2RadarOtaButton::press_action() {
   }
 }
 
+void FP2RadarFwDownloadButton::press_action() {
+  if (this->parent_ != nullptr) {
+    this->parent_->trigger_radar_fw_download();
+  }
+}
+
+void FP2Component::trigger_radar_fw_download() {
+  if (radar_firmware_url_.empty()) {
+    ESP_LOGE(TAG, "Firmware download: no radar_firmware_url configured");
+    return;
+  }
+
+  // Check if firmware already exists on flash
+  uint32_t existing = ota_detect_firmware_size_();
+  if (existing > 0) {
+    ESP_LOGI(TAG, "Firmware download: valid firmware already on flash (%u bytes). Re-downloading...", existing);
+  }
+
+  if (ota_download_firmware_()) {
+    uint32_t size = ota_detect_firmware_size_();
+    ESP_LOGW(TAG, "Firmware download complete: %u bytes written to flash. Ready for OTA.", size);
+  } else {
+    ESP_LOGE(TAG, "Firmware download failed");
+  }
+}
+
 uint16_t FP2Component::xmodem_crc16_(const uint8_t *data, size_t len) {
   uint16_t crc = 0x0000;
   for (size_t i = 0; i < len; i++) {

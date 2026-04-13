@@ -38,6 +38,7 @@ FP2LocationSwitch = aqara_fp2_ns.class_("FP2LocationSwitch", switch.Switch)
 FP2CalibrateEdgeButton = aqara_fp2_ns.class_("FP2CalibrateEdgeButton", button.Button)
 FP2CalibrateInterferenceButton = aqara_fp2_ns.class_("FP2CalibrateInterferenceButton", button.Button)
 FP2RadarOtaButton = aqara_fp2_ns.class_("FP2RadarOtaButton", button.Button)
+FP2RadarFwDownloadButton = aqara_fp2_ns.class_("FP2RadarFwDownloadButton", button.Button)
 FP2Zone = aqara_fp2_ns.class_("FP2Zone", cg.Component)
 
 CONF_FP2_ID = "fp2_id"
@@ -73,6 +74,7 @@ CONF_ZONE_PEOPLE_COUNT = "zone_people_count"
 CONF_CALIBRATE_EDGE = "calibrate_edge"
 CONF_CALIBRATE_INTERFERENCE = "calibrate_interference"
 CONF_RADAR_OTA = "radar_ota"
+CONF_RADAR_FW_DOWNLOAD = "radar_fw_download"
 CONF_FALL_DETECTION = "fall_detection"
 CONF_POSTURE = "posture"
 CONF_SLEEP_STATE = "sleep_state"
@@ -232,6 +234,11 @@ CONFIG_SCHEMA = (
                 icon="mdi:chip",
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(CONF_RADAR_FW_DOWNLOAD): button.button_schema(
+                FP2RadarFwDownloadButton,
+                icon="mdi:download",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
 
             cv.Optional("edge_label_grid_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
             cv.Optional("entry_exit_grid_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
@@ -312,6 +319,7 @@ SENSOR_MAP = {
     CONF_CALIBRATE_EDGE: (button.new_button, "set_calibrate_edge_button"),
     CONF_CALIBRATE_INTERFERENCE: (button.new_button, "set_calibrate_interference_button"),
     CONF_RADAR_OTA: (button.new_button, "set_radar_ota_button"),
+    CONF_RADAR_FW_DOWNLOAD: (button.new_button, "set_radar_fw_download_button"),
     CONF_TARGET_TRACKING: (text_sensor_.new_text_sensor, "set_target_tracking_sensor"),
 
     # Text config sensors

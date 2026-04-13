@@ -236,6 +236,15 @@ protected:
   FP2Component *parent_{nullptr};
 };
 
+class FP2RadarFwDownloadButton : public button::Button {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void press_action() override;
+  FP2Component *parent_{nullptr};
+};
+
 class FP2Component : public Component, public uart::UARTDevice {
 public:
   void setup() override;
@@ -290,7 +299,12 @@ public:
   void trigger_edge_calibration();
   void trigger_interference_calibration();
   void trigger_radar_ota();
+  void trigger_radar_fw_download();
   void set_radar_firmware_url(const std::string &url) { radar_firmware_url_ = url; }
+  void set_radar_fw_download_button(FP2RadarFwDownloadButton *btn) {
+    radar_fw_download_button_ = btn;
+    btn->set_parent(this);
+  }
 
   void set_edge_label_grid_sensor(text_sensor::TextSensor *sensor) {
     ESP_LOGI(TAG, "set_edge_label_grid_sensor called (has_edge_grid_=%d)", has_edge_grid_);
@@ -433,6 +447,7 @@ protected:
   FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};
   FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
   FP2RadarOtaButton *radar_ota_button_{nullptr};
+  FP2RadarFwDownloadButton *radar_fw_download_button_{nullptr};
   bool location_reporting_active_{false};
   uint32_t target_tracking_interval_ms_{500};
   uint32_t last_target_publish_millis_{0};
