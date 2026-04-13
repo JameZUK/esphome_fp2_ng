@@ -559,7 +559,12 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
             for (auto &z : zones_) {
               if (z->id == zone_id) {
                 // State values: 0=motion start, even=active, odd=inactive
-                z->publish_motion(state % 2 == 0);
+                bool active = (state % 2 == 0);
+                z->publish_motion(active);
+                // Infer presence from motion — 0x0142 may not fire on boot
+                if (active) {
+                    z->publish_presence(true);
+                }
                 break;
               }
             }
@@ -673,11 +678,15 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
             if (zone_id == 0) break;  // Zone 0 is invalid
             ESP_LOGD(TAG, "Zone People Number: Zone %d = %u", zone_id, count);
             for (auto &z : zones_) {
-                if (z->id == zone_id && z->zone_people_count_sensor != nullptr) {
-                    float current = z->zone_people_count_sensor->get_raw_state();
-                    if (std::isnan(current) || (int)current != count) {
-                        z->zone_people_count_sensor->publish_state((float)count);
+                if (z->id == zone_id) {
+                    if (z->zone_people_count_sensor != nullptr) {
+                        float current = z->zone_people_count_sensor->get_raw_state();
+                        if (std::isnan(current) || (int)current != count) {
+                            z->zone_people_count_sensor->publish_state((float)count);
+                        }
                     }
+                    // Infer presence from people count — 0x0142 may not fire on boot
+                    z->publish_presence(count > 0);
                     break;
                 }
             }
