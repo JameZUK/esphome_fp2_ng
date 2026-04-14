@@ -164,27 +164,30 @@ which skips the register address write).
 
 ### Not Yet Implemented
 
-- **Radar firmware OTA**: The mechanism is understood (XMODEM over UART,
-  triggered by SubID 0x0127), but not yet implemented. The `mcu_ota` partition
-  contains the radar firmware. See [03-firmware.md](03-firmware.md).
-- **Fall detection events**: Sensitivity is configurable but fall events (SubID
-  0x0121) are not processed or exposed as entities
-- **Sleep monitoring**: 6 SubIDs (0x0156-0x0176) for sleep tracking — data
-  formats not yet decoded from firmware RE
-- **Posture reporting**: SubID 0x0154 (target posture) and 0x0157 (enable) —
-  could expose standing/sitting/lying state
-- **Real-time people count**: SubIDs 0x0164 and 0x0166 are reported by the radar
-  (seen in logs as "Unhandled report") but not exposed
-- **Walking distance**: SubID 0x0174 — data format unknown
-- **Dwell time**: SubID 0x0172 — currently disabled during init
+- **Radar firmware OTA**: The XMODEM-1K mechanism is implemented (experimental)
+  but untested. Triggered by SubID 0x0127. See [03-firmware.md](03-firmware.md).
+- **Radar debug log (0x0201)**: Handler captures debug strings from radar MCU
+  but the radar's internal debug flag is off by default. No known SubID to
+  enable it.
 - **NVS lux calibration**: The stock firmware reads calibration coefficients
   (lux_low_k/b, lux_high_k/b) from NVS. Our OPT3001 driver reads raw values
   without calibration. Accuracy is good but could be improved.
 - **Accelerometer calibration**: `calculate_calibration()` computes corrections
   but is never called. A calibration trigger mechanism is needed.
+- **HW version (0x0101)**: Handler exists but radar does not respond to READ
+  requests. The radar has a send function (`FUN_00026a94`) but only sends
+  during its own boot sequence, which is before the ESP32 is ready to receive.
 
 ### Resolved (Previously Listed)
 
+- ~~Fall detection~~ — Implemented via 0x0155 PEOPLE_COUNTING. Confirmed by
+  Ghidra RE of both radar and stock ESP32 firmware.
+- ~~Sleep monitoring~~ — Fully implemented: state, presence, heart rate,
+  respiration, heart rate deviation. Sleep data (0x0159) is 3x IEEE 754 LE floats.
+- ~~Posture reporting~~ — Implemented per-zone (standing/sitting/lying).
+- ~~Real-time people count~~ — Implemented via 0x0164, 0x0165, 0x0166.
+- ~~Walking distance~~ — Implemented via 0x0174 (centimetres, divided by 100).
+- ~~Dwell time~~ — Now configurable via `dwell_time_enable` YAML option.
 - ~~Light sensor unknown~~ — Identified as TI OPT3001 at I2C 0x44. Fully
   implemented.
 - ~~Radar firmware update unknown~~ — Uses XMODEM over UART. Mechanism

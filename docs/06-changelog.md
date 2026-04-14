@@ -2,6 +2,91 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
+## 2026-04-14 — Presence Detection Fix, Fall Detection, Complete Feature Audit
+
+### Critical Fixes
+
+- **All three grids sent during init**: The radar requires edge (0x0107),
+  interference (0x0110), and exit (0x0109) grids ALL sent during init or it
+  silently suppresses presence/motion reports. The component now sends empty
+  defaults when grids are not configured in YAML.
+
+- **Double-init at 45 seconds**: The radar ACKs commands during its ~38-second
+  boot sequence but does not apply them. Init is now sent twice: on first
+  heartbeat (~3s) and again at 45 seconds. Both inits are identical.
+
+- **Presence delay after OTA**: After OTA flash, the radar takes 2-5 minutes
+  before producing presence/motion reports (0x0103/0x0104). Target tracking
+  (0x0117) starts immediately. This is normal radar behaviour.
+
+### New Features
+
+- **Fall detection via 0x0155 PEOPLE_COUNTING**: Confirmed via Ghidra RE of
+  both radar firmware (`FUN_00015624` sends 0x0155 with "Fall area: %d, %d"
+  debug string) and stock ESP32 firmware (`radar_people_counting` at
+  `0x400e04c4`). BLOB2 payload is 7 bytes:
+  `[ZoneID:1] [PeopleCount:2 BE] [OntimeValue:4 BE]`.
+  Non-zero ontime indicates a fall event. SubID 0x0121 is NOT sent by the radar.
+
+- **Fall overtime detection (0x0135)**: Binary sensor for prolonged falls
+  (person unable to get up). Triggers when fall persists beyond configured timeout.
+
+- **Fall overtime period (0x0134)**: Configurable timeout in milliseconds.
+
+- **Fall delay time (0x0179)**: Delay before confirming a fall event. Discovered
+  via Ghidra handler table RE — `"fall_delay_time:%d"` debug string in radar firmware.
+
+- **Falldown blind zone (0x0180)**: 40-byte grid (same 14x14 ASCII format) for
+  fall detection exclusion zones. Extensively referenced in radar firmware with
+  flash storage, validation, and deletion functions.
+
+- **Sleep bed height (0x0177)**: Bed/mattress height config for sleep monitoring.
+  Discovered via Ghidra — `"sleep_bed_height:%d"` in radar firmware.
+
+- **Overhead/ceiling height (0x0178)**: Ceiling height config for spatial
+  calibration. Handler `FUN_000265f4` stores at offset +0xbb0 in radar config.
+
+- **Delete false targets (0x0160)**: Button to remove phantom/false targets
+  from radar tracking.
+
+- **Dwell time enable (0x0172)**: Now configurable (was hardcoded off).
+
+- **Sleep mount position (0x0168)** and **sleep zone size (0x0169)**: Optional
+  sleep monitoring configuration parameters.
+
+- **Radar state diagnostic sensor**: Text sensor tracking boot sequence:
+  Booting → Init sent → Re-init → Ready → Presence.
+
+- **HW version capture (0x0101)**: Reads radar hardware version and appends
+  to software version string. Note: radar does not respond to READ requests
+  for this SubID in practice.
+
+- **Radar debug log (0x0201)**: Captures debug strings from radar MCU when
+  `debug_mode: true`. Radar's internal debug flag appears off by default;
+  no known SubID to enable it.
+
+### Card Improvements
+
+- **Update throttling**: 250ms throttle on hass updates (was unthrottled)
+- **Posture-aware targets**: S=standing, s=sitting, L=lying with glow effects
+- **Auto-tracking**: `auto_tracking: true` enables target reporting when card loads,
+  disables when navigating away
+- **Info overlay**: Status bar overlaid on canvas bottom instead of below it
+- **Removed console.log spam**: ~30 debug logs per update cycle removed
+
+### RE Discoveries
+
+- **0x0155 PEOPLE_COUNTING blob structure**: 7 bytes decoded via Ghidra analysis
+  of both radar (`FUN_00015624`) and stock ESP32 (`0x400e04c4`) firmware
+- **Fall detection path**: Radar's fall algorithm sends 0x0155, NOT 0x0121.
+  Stock firmware derived 0x0121 from 0x0155 data.
+- **Handler table SubIDs 0x0177-0x0180**: All four confirmed in both firmwares
+  via Ghidra. Handler functions, debug strings, and cloud relay functions found.
+- **Radar debug flag**: 0x0201 send function gated by flag at offset +0x587 in
+  radar config struct. Flag is zero (off) by default.
+- **HW_VERSION behaviour**: Radar has send function `FUN_00026a94` with
+  `"Hardware_version:%d"` string but does not respond to READ requests.
+
 ## 2026-04-12 — OPT3001 Light Sensor, Auto-Calibration, I2C Fixes
 
 ### New Features

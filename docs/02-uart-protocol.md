@@ -183,7 +183,7 @@ Status: Y = implemented, P = partial (defined but not fully handled), N = not im
 
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
-| 0x0155 | PEOPLE_COUNTING | BLOB2 | R→E | N | People counting data (complex blob) |
+| 0x0155 | PEOPLE_COUNTING | BLOB2(7B) | R→E | Y | Fall/people data: `[ZoneID:1][Count:2 BE][Ontime:4 BE]`. Non-zero ontime = fall. |
 | 0x0158 | PEOPLE_COUNT_REPORT_ENABLE | BOOL | E→R | Y | Enable count reports |
 | 0x0162 | PEOPLE_NUMBER_ENABLE | BOOL | E→R | Y | Enable number tracking |
 | 0x0163 | TARGET_TYPE_ENABLE | BOOL | E→R | Y | AI person detection |
@@ -289,10 +289,10 @@ produce metres.
 | 0x0130-0x0133 | any | — | Reserved (null handlers) |
 | 0x0136-0x0137 | any | — | Reserved (null handlers) |
 | 0x0140 | any | R→E | Report only (null handler) |
-| 0x0177 | UINT16 | R→E | Unknown (new SubID from handler table) |
-| 0x0178 | UINT16 | R→E | Unknown (new SubID from handler table) |
-| 0x0179 | UINT16 | R→E | Unknown (new SubID from handler table) |
-| 0x0180 | BLOB2 | E→R | Unknown (new SubID from handler table) |
+| 0x0177 | SLEEP_BED_HEIGHT | UINT16 | E→R | Bed/mattress height for sleep monitoring |
+| 0x0178 | OVERHEAD_HEIGHT | UINT16 | E→R | Ceiling height for spatial calibration |
+| 0x0179 | FALL_DELAY_TIME | UINT16 | E→R | Delay before confirming fall event |
+| 0x0180 | FALLDOWN_BLIND_ZONE | BLOB2(40B) | E→R | Fall detection exclusion zones (same grid format) |
 
 ### Temperature
 

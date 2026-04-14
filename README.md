@@ -280,7 +280,10 @@ show_zone_labels: true  # Show zone labels (default: true)
 | `people_count` | sensor | Total detected person count |
 | `fall_detection` | binary_sensor | Fall detected (via 0x0155 PEOPLE_COUNTING) |
 | `fall_overtime` | binary_sensor | Prolonged fall alert (person unable to get up) |
-| `fall_overtime_period` | config (ms) | How long a fall must persist before overtime triggers (default: not set) |
+| `fall_overtime` | binary_sensor | Prolonged fall alert (person unable to get up) |
+| `fall_overtime_period` | config (ms) | Time before overtime triggers (e.g. `30000ms`) |
+| `fall_delay_time` | config (uint16) | Delay before confirming a fall event |
+| `falldown_blind_zone` | config (grid) | 14x14 ASCII grid for fall detection exclusion zones |
 | `radar_state` | text_sensor | Radar boot state: Booting / Init sent / Re-init / Ready / Presence |
 | `sleep_state` | text_sensor | none / awake / light / deep |
 | `sleep_presence` | binary_sensor | Sleep zone occupancy |
@@ -289,8 +292,10 @@ show_zone_labels: true  # Show zone labels (default: true)
 | `heart_rate_deviation` | sensor (bpm) | Heart rate deviation/variability from sleep monitoring |
 | `walking_distance` | sensor (m) | Cumulative walking distance |
 | `dwell_time_enable` | config (bool) | Enable dwell time tracking (default: false) |
-| `sleep_mount_position` | config (0-3) | Sleep-specific mounting position (default: not set) |
-| `sleep_zone_size` | config (uint32) | Sleep zone dimensions (default: not set) |
+| `sleep_mount_position` | config (0-3) | Sleep-specific mounting position |
+| `sleep_zone_size` | config (uint32) | Sleep zone dimensions |
+| `sleep_bed_height` | config (uint16) | Bed/mattress height for sleep monitoring accuracy |
+| `overhead_height` | config (uint16) | Ceiling height for spatial calibration |
 | `global_zone.presence` | binary_sensor | Overall presence (0=empty, non-zero=occupied) |
 | `global_zone.motion` | binary_sensor | Overall motion (even=active, odd=inactive) |
 | `target_tracking` | text_sensor | Base64 target data (diagnostic) |
@@ -425,7 +430,8 @@ Flashing requires soldering to UART test points. See [FLASHING.md](FLASHING.md).
 
 ## Credits
 
-- [hansihe](https://github.com/hansihe) — original [esphome_fp2](https://github.com/hansihe/esphome_fp2) and [protocol reverse engineering](https://github.com/hansihe/AqaraPresenceSensorFP2ReverseEngineering)
+A massive thank you to [Hans Elias J. (hansihe)](https://github.com/hansihe) for the original [esphome_fp2](https://github.com/hansihe/esphome_fp2) component and the extraordinary [protocol reverse engineering](https://github.com/hansihe/AqaraPresenceSensorFP2ReverseEngineering) that made all of this possible. The UART protocol analysis, frame decoding, and initial SubID discovery were well outside my own skill set, and this project simply would not exist without that foundational work.
+
 - [niceboygithub](https://github.com/niceboygithub) — [hardware documentation](https://github.com/niceboygithub/AqaraPresenceSensorFP2)
 - [simmsb](https://github.com/simmsb) — ESP-IDF 5.5+ I2C migration patch
 
