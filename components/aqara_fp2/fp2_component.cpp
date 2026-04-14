@@ -801,11 +801,64 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::FALL_DETECTION:
+        // 0x0121 — NOT sent by the radar directly (confirmed via firmware RE).
+        // Kept as a fallback in case future radar firmware adds it.
         if (payload.size() >= 4 && payload[2] == 0x00) {
             uint8_t state = payload[3];
-            ESP_LOGI(TAG, "Fall detection report: %u", state);
+            ESP_LOGI(TAG, "Fall detection report (0x0121): %u", state);
             if (fall_detection_sensor_ != nullptr) {
                 fall_detection_sensor_->publish_state(state != 0);
+            }
+        }
+        break;
+
+    case AttrId::PEOPLE_COUNTING:
+        // 0x0155 — BLOB2, 7 bytes per report. Sent from radar's fall/people
+        // counting function. This is the ACTUAL source of fall detection data.
+        // Format: [ZoneID:1] [PeopleCount:2 BE] [OntimeValue:4 BE]
+        // The ontime value is a scaled float representing dwell/presence duration.
+        // Non-zero ontime with people present indicates a fall-like event
+        // (person stationary for extended period in a detected position).
+        if (payload.size() >= 12 && payload[2] == 0x06) {
+            // BLOB2: [SubID 2B] [Type 0x06] [Len_HI] [Len_LO] [Data 7B]
+            uint16_t blob_len = (payload[3] << 8) | payload[4];
+            if (blob_len >= 7 && payload.size() >= 5 + blob_len) {
+                uint8_t zone_id = payload[5];
+                uint16_t people_count = (payload[6] << 8) | payload[7];
+                uint32_t ontime_value = ((uint32_t)payload[8] << 24) |
+                                        ((uint32_t)payload[9] << 16) |
+                                        ((uint32_t)payload[10] << 8) |
+                                        ((uint32_t)payload[11]);
+
+                ESP_LOGI(TAG, "People counting (0x0155): zone=%u people=%u ontime=%u",
+                         zone_id, people_count, ontime_value);
+
+                // Fall detection: non-zero ontime indicates a fall event
+                // (radar's fall detection algorithm triggers this)
+                if (ontime_value != 0 && fall_detection_sensor_ != nullptr) {
+                    ESP_LOGW(TAG, "Fall detected via 0x0155! zone=%u ontime=%u",
+                             zone_id, ontime_value);
+                    fall_detection_sensor_->publish_state(true);
+                }
+
+                // Clear fall state when ontime returns to zero
+                if (ontime_value == 0 && fall_detection_sensor_ != nullptr &&
+                    fall_detection_sensor_->state) {
+                    fall_detection_sensor_->publish_state(false);
+                }
+
+                // Update per-zone people count if zone matches
+                if (zone_id > 0) {
+                    for (auto &z : zones_) {
+                        if (z->id == zone_id && z->zone_people_count_sensor != nullptr) {
+                            float current = z->zone_people_count_sensor->get_raw_state();
+                            if (std::isnan(current) || (int)current != people_count) {
+                                z->zone_people_count_sensor->publish_state((float)people_count);
+                            }
+                            break;
+                        }
+                    }
+                }
             }
         }
         break;
