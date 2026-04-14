@@ -157,8 +157,8 @@ class AqaraFP2Card extends HTMLElement {
         }
         #fp2-canvas {
           width: 100%;
-          aspect-ratio: 1;
-          max-height: 60vh;
+          height: auto;
+          max-width: 100%;
           display: block;
           border-radius: 8px;
           box-sizing: border-box;
@@ -342,18 +342,20 @@ class AqaraFP2Card extends HTMLElement {
 
     const gridWidth = maxX - minX + 1;
     const gridHeight = maxY - minY + 1;
-
-    // Use the actual rendered size of the canvas (controlled by CSS aspect-ratio)
-    const canvasRect = this.canvas.getBoundingClientRect();
-    const canvasWidth = canvasRect.width;
-    const canvasHeight = canvasRect.height;
-    const cellSize = Math.min(canvasWidth / gridWidth, canvasHeight / gridHeight);
+    const cellSize = containerWidth / gridWidth;
+    const canvasWidth = containerWidth;
+    // Cap height at 60% of viewport to prevent overflow on mobile
+    const maxHeight = window.innerHeight * 0.6;
+    const canvasHeight = Math.min(cellSize * gridHeight, maxHeight);
+    const effectiveCellSize = Math.min(cellSize, canvasHeight / gridHeight);
 
     this.canvas.width = canvasWidth * dpr;
     this.canvas.height = canvasHeight * dpr;
+    this.canvas.style.width = `${canvasWidth}px`;
+    this.canvas.style.height = `${canvasHeight}px`;
     this.ctx.scale(dpr, dpr);
 
-    this.renderParams = { minX, maxX, minY, maxY, cellSize, canvasWidth, canvasHeight };
+    this.renderParams = { minX, maxX, minY, maxY, cellSize: effectiveCellSize, canvasWidth, canvasHeight };
 
     // Background
     const bgColor = this._resolveColor('--card-background-color', '#1c1c1c');
@@ -361,14 +363,15 @@ class AqaraFP2Card extends HTMLElement {
     this.ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
     // Draw layers
-    this.drawBaseGrid(data, minX, maxX, minY, maxY, cellSize);
-    this.drawEdgeLabels(data, minX, maxX, minY, maxY, cellSize);
-    this.drawInterferenceSources(data, minX, maxX, minY, maxY, cellSize);
-    this.drawEntryExitZones(data, minX, maxX, minY, maxY, cellSize);
-    this.drawDetectionZones(data, minX, maxX, minY, maxY, cellSize);
-    this.drawTargets(data, minX, maxX, minY, maxY, cellSize);
+    const cs = effectiveCellSize;
+    this.drawBaseGrid(data, minX, maxX, minY, maxY, cs);
+    this.drawEdgeLabels(data, minX, maxX, minY, maxY, cs);
+    this.drawInterferenceSources(data, minX, maxX, minY, maxY, cs);
+    this.drawEntryExitZones(data, minX, maxX, minY, maxY, cs);
+    this.drawDetectionZones(data, minX, maxX, minY, maxY, cs);
+    this.drawTargets(data, minX, maxX, minY, maxY, cs);
     if (this.showSensorPosition) {
-      this.drawSensorPosition(data, minX, maxX, minY, maxY, cellSize);
+      this.drawSensorPosition(data, minX, maxX, minY, maxY, cs);
     }
   }
 
