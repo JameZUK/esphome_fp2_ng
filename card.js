@@ -8,27 +8,46 @@
  * - show_grid: (optional) Show grid lines - Default: true
  * - show_sensor_position: (optional) Show sensor position marker - Default: true
  * - show_zone_labels: (optional) Show zone labels - Default: true
- * - mounting_position: (optional) Sensor mounting position - Default: from entity or "wall"
  */
 class AqaraFP2Card extends HTMLElement {
   constructor() {
     super();
     this.config = {};
-    this.displayMode = "full"; // 'full' or 'zoomed'
+    this.displayMode = "full";
     this.showGrid = true;
     this.showSensorPosition = true;
     this.showZoneLabels = true;
     this.gridSize = 14;
+    this._lastRender = 0;
+    this._pendingUpdate = null;
   }
 
   set hass(hass) {
     this._hass = hass;
-
     if (!this.content) {
       this.initializeCard();
     }
+    // Throttle updates — radar streams at 2-3Hz but hass fires on ANY state change
+    const now = Date.now();
+    if (now - this._lastRender < 250) {
+      if (!this._pendingUpdate) {
+        this._pendingUpdate = setTimeout(() => {
+          this._pendingUpdate = null;
+          this._doUpdate();
+        }, 250 - (now - this._lastRender));
+      }
+      return;
+    }
+    this._doUpdate();
+  }
 
-    this.updateCard();
+  _doUpdate() {
+    this._lastRender = Date.now();
+    if (!this._hass || !this.canvas) return;
+    const data = this.gatherEntityData();
+    this.updateLiveViewButton();
+    this.renderCanvas(data);
+    this.updateInfoPanel(data);
   }
 
   setConfig(config) {
@@ -40,374 +59,258 @@ class AqaraFP2Card extends HTMLElement {
     this.showGrid = config.show_grid !== false;
     this.showSensorPosition = config.show_sensor_position !== false;
     this.showZoneLabels = config.show_zone_labels !== false;
-    console.log(`[FP2 Card] Card configured with entity_prefix: ${config.entity_prefix}`);
   }
 
   getReportTargetsSwitchEntity() {
-    // Convert entity_prefix (e.g., "sensor.fp2_living_room") to switch entity
-    // Result: "switch.fp2_living_room_report_targets"
     const prefix = this.config.entity_prefix;
-    const deviceName = prefix.replace(/^[^.]+\./, ''); // Remove domain prefix (sensor., etc.)
+    const deviceName = prefix.replace(/^[^.]+\./, '');
     return `switch.${deviceName}_report_targets`;
   }
 
   toggleLiveView() {
     const switchEntity = this.getReportTargetsSwitchEntity();
     const switchState = this._hass.states[switchEntity];
-
-    if (!switchState) {
-      console.warn(`[FP2 Card] Switch entity not found: ${switchEntity}`);
-      return;
-    }
-
+    if (!switchState) return;
     const service = switchState.state === 'on' ? 'turn_off' : 'turn_on';
-    console.log(`[FP2 Card] Toggling live view: ${switchEntity} -> ${service}`);
-
-    this._hass.callService('switch', service, {
-      entity_id: switchEntity
-    });
+    this._hass.callService('switch', service, { entity_id: switchEntity });
   }
 
   async fetchMapConfig() {
     const deviceName = this.config.entity_prefix.replace(/^[^.]+\./, '');
     const service = `${deviceName}_get_map_config`;
-
     try {
-      console.log(`[FP2 Card] Fetching map config via service: esphome.${service}`);
       const response = await this._hass.callService('esphome', service, {}, undefined, undefined, true);
       this.mapConfig = response.response;
-      console.log(`[FP2 Card] Map config loaded:`, this.mapConfig);
-      this.updateCard();
+      this._doUpdate();
     } catch (e) {
       console.error(`[FP2 Card] Failed to fetch map config:`, e);
     }
   }
 
+  // Resolve CSS variable to actual color for canvas (canvas can't use var())
+  _resolveColor(varName, fallback) {
+    if (!this._computedStyle) {
+      this._computedStyle = getComputedStyle(this);
+    }
+    return this._computedStyle.getPropertyValue(varName).trim() || fallback;
+  }
+
   initializeCard() {
     this.innerHTML = `
       <ha-card>
-        <div class="card-header">
-          <div class="name">${this.config.title || "Aqara FP2 Presence Sensor"}</div>
-          <div class="controls">
-            <button class="live-view-toggle" title="Toggle Live View (Target Reporting)">
-              <ha-icon icon="mdi:eye"></ha-icon>
+        <div class="fp2-header">
+          <div class="fp2-title">${this.config.title || "Aqara FP2"}</div>
+          <div class="fp2-controls">
+            <button class="fp2-btn live-view-toggle" title="Toggle Live Tracking">
+              <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
             </button>
           </div>
         </div>
-        <div class="card-content">
+        <div class="fp2-content">
           <canvas id="fp2-canvas"></canvas>
-          <div class="info-panel"></div>
         </div>
+        <div class="fp2-info"></div>
       </ha-card>
       <style>
         ha-card {
           padding: 16px;
           overflow: hidden;
         }
-        .card-header {
+        .fp2-header {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          margin-bottom: 16px;
+          margin-bottom: 12px;
         }
-        .card-header .name {
-          font-size: 24px;
+        .fp2-title {
+          font-size: 18px;
           font-weight: 500;
+          color: var(--primary-text-color);
         }
-        .card-header .controls {
+        .fp2-controls {
           display: flex;
           gap: 8px;
         }
-        .card-header button {
-          background: none;
+        .fp2-btn {
+          background: var(--secondary-background-color);
           border: 1px solid var(--divider-color);
-          border-radius: 4px;
-          padding: 8px;
+          border-radius: 8px;
+          padding: 6px 8px;
           cursor: pointer;
           color: var(--primary-text-color);
+          transition: all 0.2s ease;
         }
-        .card-header button:hover {
-          background: var(--secondary-background-color);
-        }
-        .card-header button.active {
+        .fp2-btn:hover {
           background: var(--primary-color);
           color: var(--text-primary-color);
         }
-        .card-content {
+        .fp2-btn.active {
+          background: var(--primary-color);
+          color: var(--text-primary-color);
+          box-shadow: 0 0 8px rgba(var(--rgb-primary-color), 0.4);
+        }
+        .fp2-content {
           display: flex;
           flex-direction: column;
-          gap: 16px;
         }
         #fp2-canvas {
           width: 100%;
           height: auto;
-          max-width: 100%;
           display: block;
-          border: 1px solid var(--divider-color);
-          border-radius: 4px;
-          background: var(--card-background-color);
+          border-radius: 8px;
           box-sizing: border-box;
         }
-        .info-panel {
-          font-size: 14px;
+        .fp2-info {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 12px;
+          margin-top: 12px;
+          font-size: 13px;
           color: var(--secondary-text-color);
         }
+        .fp2-info .fp2-stat {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+        }
+        .fp2-info .fp2-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          display: inline-block;
+        }
+        .fp2-info .fp2-dot.presence { background: #4CAF50; }
+        .fp2-info .fp2-dot.no-presence { background: #666; }
+        .fp2-info .fp2-dot.target { background: #FF9800; }
+        .fp2-info .fp2-dot.zone-on { background: #42A5F5; }
+        .fp2-info .fp2-dot.zone-off { background: rgba(66,165,245,0.3); }
       </style>
     `;
 
-    this.content = this.querySelector(".card-content");
+    this.content = this.querySelector(".fp2-content");
     this.canvas = this.querySelector("#fp2-canvas");
     this.ctx = this.canvas.getContext("2d");
-    this.infoPanel = this.querySelector(".info-panel");
+    this.infoPanel = this.querySelector(".fp2-info");
 
-    // Set up event listeners
-    this.querySelector(".live-view-toggle").addEventListener("click", () => {
-      this.toggleLiveView();
-    });
-
+    this.querySelector(".live-view-toggle").addEventListener("click", () => this.toggleLiveView());
     this.canvas.addEventListener("click", (e) => this.handleCanvasClick(e));
-    this.canvas.addEventListener("mousemove", (e) => this.handleCanvasHover(e));
 
-    // Set up ResizeObserver to handle card resizing
-    this.resizeObserver = new ResizeObserver(() => {
-      console.log(`[FP2 Card] Container resized, redrawing canvas`);
-      this.updateCard();
-    });
+    this.resizeObserver = new ResizeObserver(() => this._doUpdate());
     this.resizeObserver.observe(this.content);
 
-    // Fetch map configuration from ESPHome service
     this.fetchMapConfig();
-  }
-
-  updateCard() {
-    if (!this._hass || !this.canvas) {
-      console.log(`[FP2 Card] updateCard skipped: hass=${!!this._hass}, canvas=${!!this.canvas}`);
-      return;
-    }
-
-    console.log(`[FP2 Card] ===== Card update triggered =====`);
-    const data = this.gatherEntityData();
-    this.updateLiveViewButton();
-    this.renderCanvas(data);
-    this.updateInfoPanel(data);
   }
 
   updateLiveViewButton() {
     const switchEntity = this.getReportTargetsSwitchEntity();
     const switchState = this._hass.states[switchEntity];
     const button = this.querySelector(".live-view-toggle");
-
     if (!button) return;
-
-    if (switchState && switchState.state === 'on') {
-      button.classList.add('active');
-    } else {
-      button.classList.remove('active');
-    }
+    button.classList.toggle('active', switchState && switchState.state === 'on');
   }
 
   gatherEntityData() {
     const prefix = this.config.entity_prefix;
     const hass = this._hass;
+    const deviceName = prefix.replace(/^[^.]+\./, '');
 
-    console.log(`[FP2 Card] Starting entity data gathering with prefix: ${prefix}`);
-
-    // Helper to safely get entity state
-    const getEntityState = (entityId) => {
-      const state = hass.states[entityId];
-      if (state) {
-        console.log(`[FP2 Card] ✓ Entity found: ${entityId} = "${state.state}"`);
-        return state.state;
-      } else {
-        console.warn(`[FP2 Card] ✗ Entity not found: ${entityId}`);
-        return null;
-      }
+    const getState = (entityId) => {
+      const s = hass.states[entityId];
+      return s ? s.state : null;
     };
 
-    // Helper to decode base64 target data
-    // Binary format: [count(1)][target(14) * count]
-    // Each target: id(1), x(2), y(2), z(2), velocity(2), snr(2), classifier(1), posture(1), active(1)
-    const decodeTargetsBase64 = (base64String) => {
-      if (!base64String || base64String === "") return [];
-
+    const decodeTargets = (base64String) => {
+      if (!base64String || base64String === "" || base64String === "unknown") return [];
       try {
-        // Decode base64 to binary
-        const binaryString = atob(base64String);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-
+        const bin = atob(base64String);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         if (bytes.length < 1) return [];
-
         const count = bytes[0];
         const targets = [];
-
-        // Parse big-endian int16 values
-        const getInt16 = (offset) => {
-          const val = (bytes[offset] << 8) | bytes[offset + 1];
-          return val > 32767 ? val - 65536 : val;
-        };
-
+        const i16 = (o) => { const v = (bytes[o] << 8) | bytes[o+1]; return v > 32767 ? v - 65536 : v; };
         for (let i = 0; i < count; i++) {
-          const offset = 1 + (i * 14);
-          if (offset + 14 > bytes.length) break;
-
+          const o = 1 + (i * 14);
+          if (o + 14 > bytes.length) break;
           targets.push({
-            id: bytes[offset],
-            x: getInt16(offset + 1),
-            y: getInt16(offset + 3),
-            z: getInt16(offset + 5),
-            velocity: getInt16(offset + 7),
-            snr: getInt16(offset + 9),
-            classifier: bytes[offset + 11],
-            posture: bytes[offset + 12],
-            active: bytes[offset + 13],
+            id: bytes[o], x: i16(o+1), y: i16(o+3), z: i16(o+5),
+            velocity: i16(o+7), snr: i16(o+9),
+            classifier: bytes[o+11], posture: bytes[o+12], active: bytes[o+13],
           });
         }
-
-        console.log(`[FP2 Card] ✓ Decoded ${targets.length} targets from base64`);
         return targets;
-      } catch (e) {
-        console.error(`[FP2 Card] ✗ Base64 decode error:`, e.message);
-        return [];
-      }
+      } catch (e) { return []; }
     };
 
-    // Helper to parse grid from hex bitmap string (14 rows × 4 hex chars = 56 chars)
-    // Each row is represented by 4 hex characters (2 bytes), with the 14 LSBs indicating cell states
-    const parseGrid = (gridString, gridName = "unknown") => {
-      if (!gridString) {
-        console.warn(`[FP2 Card] Grid "${gridName}" is null/undefined, using empty grid`);
-        return Array(14)
-          .fill(null)
-          .map(() => Array(14).fill(0));
-      }
-      if (gridString.length !== 56) {
-        console.warn(`[FP2 Card] Grid "${gridName}" has invalid length ${gridString.length} (expected 56), using empty grid`);
-        return Array(14)
-          .fill(null)
-          .map(() => Array(14).fill(0));
+    const parseGrid = (gridString) => {
+      if (!gridString || gridString.length !== 56) {
+        return Array(14).fill(null).map(() => Array(14).fill(0));
       }
       const grid = [];
       for (let y = 0; y < 14; y++) {
         grid[y] = [];
-        // Read 4 hex chars for this row (representing 2 bytes)
-        const hexChars = gridString.substr(y * 4, 4);
-        const rowBits = parseInt(hexChars, 16);
-
-        // Extract the 14 LSBs as cell values (LSB = rightmost cell)
-        for (let x = 0; x < 14; x++) {
-          grid[y][x] = (rowBits >> (13 - x)) & 1;
-        }
+        const rowBits = parseInt(gridString.substr(y * 4, 4), 16);
+        for (let x = 0; x < 14; x++) grid[y][x] = (rowBits >> (13 - x)) & 1;
       }
-      console.log(`[FP2 Card] ✓ Grid "${gridName}" parsed successfully`);
       return grid;
     };
 
-    // --- Static Map Config (from ESPHome service) ---
-    // Use cached map config if available, otherwise use empty defaults
     const mapConfig = this.mapConfig || {};
-    console.log(`[FP2 Card] Using cached map config:`, !!this.mapConfig);
-
-    const edgeLabelGrid = parseGrid(mapConfig.edge_grid, "edge_grid");
-    const entryExitGrid = parseGrid(mapConfig.exit_grid, "exit_grid");
-    const interferenceGrid = parseGrid(mapConfig.interference_grid, "interference_grid");
-    const mountingPosition = mapConfig.mounting_position || "wall";
-
-    // --- Detection Zones (from map config with dynamic occupancy) ---
     const zones = [];
     if (mapConfig.zones && Array.isArray(mapConfig.zones)) {
-      mapConfig.zones.forEach((zoneConfig, index) => {
-        const zoneMap = parseGrid(zoneConfig.grid, `zone_${index}_grid`);
-
-        // Look up occupancy state from the presence sensor entity
+      mapConfig.zones.forEach((zc, i) => {
         let occupancy = false;
-        if (zoneConfig.presence_sensor) {
-          const presenceEntityId = `binary_sensor.${zoneConfig.presence_sensor}`;
-          const presenceState = getEntityState(presenceEntityId);
-          occupancy = presenceState === "on";
+        if (zc.presence_sensor) {
+          occupancy = getState(`binary_sensor.${zc.presence_sensor}`) === "on";
         }
-
         zones.push({
-          id: zoneConfig.presence_sensor || `zone_${index}`,
-          map: zoneMap,
-          occupancy: occupancy,
+          id: zc.presence_sensor || `zone_${i}`,
+          name: zc.name || (zc.presence_sensor || `Zone ${i+1}`).replace(/^.*_/, '').replace(/_/g, ' '),
+          map: parseGrid(zc.grid),
+          occupancy,
         });
-        console.log(`[FP2 Card] ✓ Zone ${index}: presence_sensor=${zoneConfig.presence_sensor}, occupancy=${occupancy}`);
       });
     }
-    console.log(`[FP2 Card] Total zones from config: ${zones.length}`);
 
-    // --- Full Location Data Sensor ---
-    // Text sensor containing base64-encoded binary target data
-    // Binary format: [count(1)][target(14) * count]
-    // Will be null/undefined when location reporting is disabled
-    console.log(`[FP2 Card] Loading target data...`);
-    const targetsBase64 = getEntityState(`${prefix}_targets`);
-    const targetData = targetsBase64 ? decodeTargetsBase64(targetsBase64) : [];
-    const targetCount = targetData.length;
-    console.log(`[FP2 Card] Total targets: ${targetCount}`);
+    const targetsBase64 = getState(`${prefix}_targets`);
+    const globalPresence = getState(`binary_sensor.${deviceName}_global_presence`);
+    const totalPeople = getState(`${prefix}_total_people`);
 
-    const result = {
-      edgeLabelGrid,
-      entryExitGrid,
-      interferenceGrid,
-      mountingPosition,
+    return {
+      edgeLabelGrid: parseGrid(mapConfig.edge_grid),
+      entryExitGrid: parseGrid(mapConfig.exit_grid),
+      interferenceGrid: parseGrid(mapConfig.interference_grid),
+      mountingPosition: mapConfig.mounting_position || "wall",
       zones,
-      targets: targetData || [],
+      targets: decodeTargets(targetsBase64),
+      globalPresence: globalPresence === "on",
+      totalPeople: totalPeople ? parseFloat(totalPeople) : 0,
     };
-
-    console.log(`[FP2 Card] ===== Entity gathering complete =====`);
-    console.log(`[FP2 Card] Summary: ${zones.length} zones, ${targetCount} targets, mounting: ${mountingPosition}`);
-
-    return result;
   }
 
   renderCanvas(data) {
-    // Calculate canvas dimensions from card content container
     const containerWidth = this.content.clientWidth;
-    if (!containerWidth || containerWidth === 0) {
-      console.warn(`[FP2 Card] Container width is ${containerWidth}, deferring render`);
-      return;
-    }
+    if (!containerWidth) return;
 
-    console.log(`[FP2 Card] Rendering canvas with container width: ${containerWidth}px`);
+    // Invalidate cached computed style on resize
+    this._computedStyle = null;
+
     const dpr = window.devicePixelRatio || 1;
-
-    // Determine which cells to display
-    let minX = 0,
-      maxX = 13,
-      minY = 0,
-      maxY = 13;
+    let minX = 0, maxX = 13, minY = 0, maxY = 13;
 
     if (this.displayMode === "zoomed") {
-      // Calculate bounding box of non-edge cells
       let found = false;
-      minX = 13;
-      maxX = 0;
-      minY = 13;
-      maxY = 0;
-
+      minX = 13; maxX = 0; minY = 13; maxY = 0;
       for (let y = 0; y < 14; y++) {
         for (let x = 0; x < 14; x++) {
           if (!data.edgeLabelGrid[y][x]) {
             found = true;
-            minX = Math.min(minX, x);
-            maxX = Math.max(maxX, x);
-            minY = Math.min(minY, y);
-            maxY = Math.max(maxY, y);
+            minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y); maxY = Math.max(maxY, y);
           }
         }
       }
-
-      if (!found) {
-        // Fallback to full grid if no non-edge cells
-        minX = 0;
-        maxX = 13;
-        minY = 0;
-        maxY = 13;
-      }
+      if (!found) { minX = 0; maxX = 13; minY = 0; maxY = 13; }
     }
 
     const gridWidth = maxX - minX + 1;
@@ -416,369 +319,336 @@ class AqaraFP2Card extends HTMLElement {
     const canvasWidth = containerWidth;
     const canvasHeight = cellSize * gridHeight;
 
-    // Set canvas size accounting for device pixel ratio
     this.canvas.width = canvasWidth * dpr;
     this.canvas.height = canvasHeight * dpr;
     this.canvas.style.width = `${canvasWidth}px`;
     this.canvas.style.height = `${canvasHeight}px`;
-
     this.ctx.scale(dpr, dpr);
 
-    // Store for mouse interactions
-    this.renderParams = {
-      minX,
-      maxX,
-      minY,
-      maxY,
-      cellSize,
-      canvasWidth,
-      canvasHeight,
-    };
+    this.renderParams = { minX, maxX, minY, maxY, cellSize, canvasWidth, canvasHeight };
 
-    // Clear canvas
-    this.ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    // Background
+    const bgColor = this._resolveColor('--card-background-color', '#1c1c1c');
+    this.ctx.fillStyle = bgColor;
+    this.ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-    // Draw layers in order
+    // Draw layers
     this.drawBaseGrid(data, minX, maxX, minY, maxY, cellSize);
     this.drawEdgeLabels(data, minX, maxX, minY, maxY, cellSize);
     this.drawInterferenceSources(data, minX, maxX, minY, maxY, cellSize);
     this.drawEntryExitZones(data, minX, maxX, minY, maxY, cellSize);
     this.drawDetectionZones(data, minX, maxX, minY, maxY, cellSize);
     this.drawTargets(data, minX, maxX, minY, maxY, cellSize);
-
     if (this.showSensorPosition) {
       this.drawSensorPosition(data, minX, maxX, minY, maxY, cellSize);
     }
   }
 
   drawBaseGrid(data, minX, maxX, minY, maxY, cellSize) {
-    this.ctx.strokeStyle = "var(--divider-color)";
+    if (!this.showGrid) return;
+    this.ctx.strokeStyle = "rgba(255,255,255,0.06)";
     this.ctx.lineWidth = 0.5;
-
     for (let y = minY; y <= maxY + 1; y++) {
       const yPos = (y - minY) * cellSize;
-      this.ctx.beginPath();
-      this.ctx.moveTo(0, yPos);
-      this.ctx.lineTo((maxX - minX + 1) * cellSize, yPos);
-      this.ctx.stroke();
+      this.ctx.beginPath(); this.ctx.moveTo(0, yPos); this.ctx.lineTo((maxX - minX + 1) * cellSize, yPos); this.ctx.stroke();
     }
-
     for (let x = minX; x <= maxX + 1; x++) {
       const xPos = (x - minX) * cellSize;
-      this.ctx.beginPath();
-      this.ctx.moveTo(xPos, 0);
-      this.ctx.lineTo(xPos, (maxY - minY + 1) * cellSize);
-      this.ctx.stroke();
+      this.ctx.beginPath(); this.ctx.moveTo(xPos, 0); this.ctx.lineTo(xPos, (maxY - minY + 1) * cellSize); this.ctx.stroke();
     }
   }
 
   drawEdgeLabels(data, minX, maxX, minY, maxY, cellSize) {
-    this.ctx.fillStyle = "rgba(128, 128, 128, 0.5)";
-
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {
-        if (data.edgeLabelGrid[y][x]) {
-          const xPos = (x - minX) * cellSize;
-          const yPos = (y - minY) * cellSize;
-          this.ctx.fillRect(xPos, yPos, cellSize, cellSize);
-
-          // Add crosshatch pattern
-          this.ctx.strokeStyle = "rgba(96, 96, 96, 0.3)";
-          this.ctx.lineWidth = 1;
-          this.ctx.beginPath();
-          this.ctx.moveTo(xPos, yPos);
-          this.ctx.lineTo(xPos + cellSize, yPos + cellSize);
-          this.ctx.moveTo(xPos + cellSize, yPos);
-          this.ctx.lineTo(xPos, yPos + cellSize);
-          this.ctx.stroke();
-        }
+        if (!data.edgeLabelGrid[y][x]) continue;
+        const xPos = (x - minX) * cellSize;
+        const yPos = (y - minY) * cellSize;
+        // Subtle dark fill for out-of-bounds
+        this.ctx.fillStyle = "rgba(0,0,0,0.3)";
+        this.ctx.fillRect(xPos, yPos, cellSize, cellSize);
+        // Diagonal hash
+        this.ctx.strokeStyle = "rgba(255,255,255,0.05)";
+        this.ctx.lineWidth = 0.5;
+        this.ctx.beginPath();
+        this.ctx.moveTo(xPos, yPos); this.ctx.lineTo(xPos + cellSize, yPos + cellSize);
+        this.ctx.stroke();
       }
     }
   }
 
   drawInterferenceSources(data, minX, maxX, minY, maxY, cellSize) {
-    this.ctx.fillStyle = "rgba(255, 100, 100, 0.3)";
-
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {
-        if (data.interferenceGrid[y][x]) {
-          const xPos = (x - minX) * cellSize;
-          const yPos = (y - minY) * cellSize;
-          this.ctx.fillRect(xPos, yPos, cellSize, cellSize);
-        }
+        if (!data.interferenceGrid[y][x]) continue;
+        const xPos = (x - minX) * cellSize;
+        const yPos = (y - minY) * cellSize;
+        this.ctx.fillStyle = "rgba(244,67,54,0.25)";
+        this.ctx.fillRect(xPos, yPos, cellSize, cellSize);
+        // X pattern for interference
+        this.ctx.strokeStyle = "rgba(244,67,54,0.4)";
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.moveTo(xPos + 2, yPos + 2); this.ctx.lineTo(xPos + cellSize - 2, yPos + cellSize - 2);
+        this.ctx.moveTo(xPos + cellSize - 2, yPos + 2); this.ctx.lineTo(xPos + 2, yPos + cellSize - 2);
+        this.ctx.stroke();
       }
     }
   }
 
   drawEntryExitZones(data, minX, maxX, minY, maxY, cellSize) {
-    this.ctx.strokeStyle = "rgba(100, 200, 100, 0.8)";
-    this.ctx.lineWidth = 3;
-
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {
-        if (data.entryExitGrid[y][x]) {
-          const xPos = (x - minX) * cellSize;
-          const yPos = (y - minY) * cellSize;
-          this.ctx.strokeRect(xPos + 2, yPos + 2, cellSize - 4, cellSize - 4);
-        }
+        if (!data.entryExitGrid[y][x]) continue;
+        const xPos = (x - minX) * cellSize;
+        const yPos = (y - minY) * cellSize;
+        this.ctx.fillStyle = "rgba(76,175,80,0.15)";
+        this.ctx.fillRect(xPos, yPos, cellSize, cellSize);
+        this.ctx.strokeStyle = "rgba(76,175,80,0.5)";
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(xPos + 1, yPos + 1, cellSize - 2, cellSize - 2);
       }
     }
   }
 
   drawDetectionZones(data, minX, maxX, minY, maxY, cellSize) {
     data.zones.forEach((zone) => {
-      // Determine zone color based on occupancy
-      const baseColor = zone.occupancy
-        ? "rgba(100, 150, 255, 0.6)" // Occupied: bright blue
-        : "rgba(100, 150, 255, 0.2)"; // Empty: light blue
+      const occupied = zone.occupancy;
+      const fillColor = occupied ? "rgba(66,165,245,0.35)" : "rgba(66,165,245,0.08)";
+      const borderColor = occupied ? "rgba(33,150,243,0.9)" : "rgba(33,150,243,0.25)";
 
-      this.ctx.fillStyle = baseColor;
-
-      // Fill zone cells
-      for (let y = minY; y <= maxY; y++) {
-        for (let x = minX; x <= maxX; x++) {
-          if (zone.map[y][x]) {
-            const xPos = (x - minX) * cellSize;
-            const yPos = (y - minY) * cellSize;
-            this.ctx.fillRect(xPos, yPos, cellSize, cellSize);
-          }
-        }
-      }
-
-      // Draw zone border
-      this.ctx.strokeStyle = zone.occupancy
-        ? "rgba(50, 100, 255, 0.8)"
-        : "rgba(50, 100, 255, 0.4)";
-      this.ctx.lineWidth = 2;
-
-      // Find zone bounds for label placement
-      let zoneMinX = 14,
-        zoneMaxX = -1,
-        zoneMinY = 14,
-        zoneMaxY = -1;
+      // Collect zone cells and find bounds
+      let zMinX = 14, zMaxX = -1, zMinY = 14, zMaxY = -1;
       for (let y = 0; y < 14; y++) {
         for (let x = 0; x < 14; x++) {
           if (zone.map[y][x]) {
-            zoneMinX = Math.min(zoneMinX, x);
-            zoneMaxX = Math.max(zoneMaxX, x);
-            zoneMinY = Math.min(zoneMinY, y);
-            zoneMaxY = Math.max(zoneMaxY, y);
+            zMinX = Math.min(zMinX, x); zMaxX = Math.max(zMaxX, x);
+            zMinY = Math.min(zMinY, y); zMaxY = Math.max(zMaxY, y);
           }
         }
       }
 
-      // Draw border around zone
-      if (zoneMinX <= zoneMaxX) {
-        for (let y = minY; y <= maxY; y++) {
-          for (let x = minX; x <= maxX; x++) {
-            if (zone.map[y][x]) {
-              const xPos = (x - minX) * cellSize;
-              const yPos = (y - minY) * cellSize;
-              this.ctx.strokeRect(
-                xPos + 1,
-                yPos + 1,
-                cellSize - 2,
-                cellSize - 2,
-              );
-            }
+      // Fill zone cells
+      this.ctx.fillStyle = fillColor;
+      for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+          if (zone.map[y][x]) {
+            this.ctx.fillRect((x - minX) * cellSize, (y - minY) * cellSize, cellSize, cellSize);
           }
         }
+      }
 
-        // Draw zone label if enabled and zone is visible
-        if (
-          this.showZoneLabels &&
-          zoneMinX >= minX &&
-          zoneMaxX <= maxX &&
-          zoneMinY >= minY &&
-          zoneMaxY <= maxY
-        ) {
-          const labelX = (zoneMinX + zoneMaxX) / 2;
-          const labelY = (zoneMinY + zoneMaxY) / 2;
-          const xPos = (labelX - minX) * cellSize + cellSize / 2;
-          const yPos = (labelY - minY) * cellSize + cellSize / 2;
+      // Draw clean outer border around the zone bounding box
+      if (zMinX <= zMaxX && zMinX >= minX && zMaxX <= maxX && zMinY >= minY && zMaxY <= maxY) {
+        const bx = (zMinX - minX) * cellSize;
+        const by = (zMinY - minY) * cellSize;
+        const bw = (zMaxX - zMinX + 1) * cellSize;
+        const bh = (zMaxY - zMinY + 1) * cellSize;
+        this.ctx.strokeStyle = borderColor;
+        this.ctx.lineWidth = occupied ? 2.5 : 1.5;
+        this.ctx.setLineDash(occupied ? [] : [4, 4]);
+        this.ctx.strokeRect(bx + 1, by + 1, bw - 2, bh - 2);
+        this.ctx.setLineDash([]);
 
-          this.ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-          this.ctx.strokeStyle = "rgba(50, 100, 255, 0.8)";
-          this.ctx.lineWidth = 2;
-
-          const labelText = zone.id;
-          this.ctx.font = `bold ${Math.min(cellSize * 0.6, 16)}px sans-serif`;
+        // Zone label
+        if (this.showZoneLabels) {
+          const cx = bx + bw / 2;
+          const cy = by + bh / 2;
+          const label = zone.name || zone.id;
+          const fontSize = Math.min(cellSize * 0.5, 14);
+          this.ctx.font = `600 ${fontSize}px system-ui, sans-serif`;
           this.ctx.textAlign = "center";
           this.ctx.textBaseline = "middle";
+          const tw = this.ctx.measureText(label).width;
+          const pad = 6;
 
-          const metrics = this.ctx.measureText(labelText);
-          const padding = 4;
-          this.ctx.fillRect(
-            xPos - metrics.width / 2 - padding,
-            yPos - cellSize * 0.3 - padding,
-            metrics.width + padding * 2,
-            cellSize * 0.6 + padding * 2,
-          );
+          // Label background pill
+          const rx = cx - tw / 2 - pad;
+          const ry = cy - fontSize / 2 - pad / 2;
+          const rw = tw + pad * 2;
+          const rh = fontSize + pad;
+          const r = rh / 2;
+          this.ctx.fillStyle = occupied ? "rgba(33,150,243,0.85)" : "rgba(33,150,243,0.4)";
+          this.ctx.beginPath();
+          this.ctx.moveTo(rx + r, ry);
+          this.ctx.lineTo(rx + rw - r, ry);
+          this.ctx.arcTo(rx + rw, ry, rx + rw, ry + r, r);
+          this.ctx.lineTo(rx + rw, ry + rh - r);
+          this.ctx.arcTo(rx + rw, ry + rh, rx + rw - r, ry + rh, r);
+          this.ctx.lineTo(rx + r, ry + rh);
+          this.ctx.arcTo(rx, ry + rh, rx, ry + rh - r, r);
+          this.ctx.lineTo(rx, ry + r);
+          this.ctx.arcTo(rx, ry, rx + r, ry, r);
+          this.ctx.closePath();
+          this.ctx.fill();
 
-          this.ctx.fillStyle = "rgba(50, 100, 255, 1)";
-          this.ctx.fillText(labelText, xPos, yPos);
+          this.ctx.fillStyle = "#fff";
+          this.ctx.fillText(label, cx, cy);
         }
       }
     });
   }
 
   drawTargets(data, minX, maxX, minY, maxY, cellSize) {
-    if (!data.targets || !Array.isArray(data.targets)) return;
+    if (!data.targets || !data.targets.length) return;
+
+    const postureIcons = { 0: "\u{1F9CD}", 1: "\u{1F9CE}", 2: "\u{1F6CC}" }; // standing, kneeling, sleeping
+    const postureLabels = { 0: "Standing", 1: "Sitting", 2: "Lying" };
 
     data.targets.forEach((target) => {
-      let gridX, gridY;
+      const gridX = (-target.x + 400) / 800.0 * 14.0;
+      const gridY = target.y / 800.0 * 14.0;
+      if (gridX < minX || gridX > maxX + 1 || gridY < minY || gridY > maxY + 1) return;
 
-      // Convert raw coordinates to grid space
-      // Raw coordinates: X in [-400, +400], Y in [0, 800]
-      // X = +400: Left edge, X = -400: Right edge
-      // Y = 0: Top edge (closest to sensor), Y = 800: Bottom edge (farthest from sensor)
-      // The coordinate space is the same regardless of mounting position;
-      // mounting position only affects the radar's internal calibration.
-      gridX = (-target.x + 400) / 800.0 * 14.0;
-      gridY = target.y / 800.0 * 14.0;
+      const xPos = (gridX - minX) * cellSize;
+      const yPos = (gridY - minY) * cellSize;
+      const radius = Math.min(cellSize * 0.35, 18);
 
-      const x = gridX;
-      const y = gridY;
+      // Glow effect
+      const gradient = this.ctx.createRadialGradient(xPos, yPos, 0, xPos, yPos, radius * 2.5);
+      gradient.addColorStop(0, "rgba(255,152,0,0.3)");
+      gradient.addColorStop(1, "rgba(255,152,0,0)");
+      this.ctx.fillStyle = gradient;
+      this.ctx.beginPath();
+      this.ctx.arc(xPos, yPos, radius * 2.5, 0, Math.PI * 2);
+      this.ctx.fill();
 
-      // Check if target is in visible range
-      if (x < minX || x > maxX + 1 || y < minY || y > maxY + 1) return;
-
-      const xPos = (x - minX) * cellSize;
-      const yPos = (y - minY) * cellSize;
-      const radius = Math.min(cellSize * 0.3, 15);
-
-      // Draw target circle
-      this.ctx.fillStyle = "rgba(255, 200, 0, 0.8)";
-      this.ctx.strokeStyle = "rgba(255, 150, 0, 1)";
+      // Target circle
+      this.ctx.fillStyle = "rgba(255,152,0,0.9)";
+      this.ctx.strokeStyle = "rgba(255,111,0,1)";
       this.ctx.lineWidth = 2;
-
       this.ctx.beginPath();
       this.ctx.arc(xPos, yPos, radius, 0, Math.PI * 2);
       this.ctx.fill();
       this.ctx.stroke();
 
-      // Draw target ID
-      this.ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
-      this.ctx.font = `bold ${Math.min(cellSize * 0.4, 12)}px sans-serif`;
+      // Posture icon or ID
+      const fontSize = Math.min(cellSize * 0.45, 14);
+      this.ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
       this.ctx.textAlign = "center";
       this.ctx.textBaseline = "middle";
-      this.ctx.fillText(target.id || "?", xPos, yPos);
+      this.ctx.fillStyle = "#000";
+
+      const posture = target.posture;
+      if (posture in postureLabels) {
+        // Show posture initial: S(tanding), s(itting), L(ying)
+        const initials = { 0: "S", 1: "s", 2: "L" };
+        this.ctx.fillText(initials[posture] || target.id, xPos, yPos);
+      } else {
+        this.ctx.fillText(target.id, xPos, yPos);
+      }
+
+      // Velocity indicator (small arrow showing movement direction)
+      if (Math.abs(target.velocity) > 5) {
+        const speed = Math.min(Math.abs(target.velocity) / 100, 1);
+        const arrowLen = radius * 1.5 * speed;
+        const angle = target.velocity > 0 ? -Math.PI / 2 : Math.PI / 2; // towards/away from sensor
+        this.ctx.strokeStyle = "rgba(255,255,255,0.7)";
+        this.ctx.lineWidth = 2;
+        this.ctx.beginPath();
+        this.ctx.moveTo(xPos, yPos + radius + 2);
+        this.ctx.lineTo(xPos, yPos + radius + 2 + arrowLen);
+        this.ctx.stroke();
+      }
     });
   }
 
   drawSensorPosition(data, minX, maxX, minY, maxY, cellSize) {
     let sensorX, sensorY;
-
     switch (data.mountingPosition) {
-      case "left_upper_corner":
-        // Top left corner of top-left cell (0,0)
-        sensorX = 0;
-        sensorY = 0;
-        break;
-      case "right_upper_corner":
-        // Top right corner of top-right cell (13,0)
-        sensorX = 14; // Right edge of cell 13
-        sensorY = 0;
-        break;
-      case "wall":
-      default:
-        // Top edge between middle cells (between cells 6 and 7)
-        sensorX = 7; // Grid line between cells 6 and 7
-        sensorY = 0;
-        break;
+      case "left_upper_corner": case "left_corner": sensorX = 0; sensorY = 0; break;
+      case "right_upper_corner": case "right_corner": sensorX = 14; sensorY = 0; break;
+      case "wall": default: sensorX = 7; sensorY = 0; break;
     }
-
-    // Only draw if sensor is in visible range
-    if (
-      sensorX < minX - 1 ||
-      sensorX > maxX + 1 ||
-      sensorY < minY - 1 ||
-      sensorY > maxY + 1
-    ) {
-      return;
-    }
+    if (sensorX < minX - 1 || sensorX > maxX + 1 || sensorY < minY - 1 || sensorY > maxY + 1) return;
 
     const xPos = (sensorX - minX) * cellSize;
     const yPos = (sensorY - minY) * cellSize;
-    const size = cellSize * 0.4;
+    const size = cellSize * 0.3;
 
-    // Draw sensor icon (radar waves)
-    this.ctx.strokeStyle = "rgba(255, 100, 100, 0.7)";
-    this.ctx.lineWidth = 2;
-
+    // Radar wave arcs
     for (let i = 0; i < 3; i++) {
+      this.ctx.strokeStyle = `rgba(244,67,54,${0.5 - i * 0.15})`;
+      this.ctx.lineWidth = 1.5;
       this.ctx.beginPath();
-      this.ctx.arc(xPos, yPos, size + i * 8, 0, Math.PI);
+      this.ctx.arc(xPos, yPos, size + i * 7, 0, Math.PI);
       this.ctx.stroke();
     }
 
-    // Draw sensor dot
-    this.ctx.fillStyle = "rgba(255, 50, 50, 0.9)";
+    // Sensor dot
+    this.ctx.fillStyle = "#f44336";
     this.ctx.beginPath();
     this.ctx.arc(xPos, yPos, 4, 0, Math.PI * 2);
     this.ctx.fill();
+
+    // Label
+    this.ctx.font = "bold 10px system-ui, sans-serif";
+    this.ctx.fillStyle = "rgba(244,67,54,0.9)";
+    this.ctx.textAlign = "center";
+    this.ctx.textBaseline = "top";
+    this.ctx.fillText("SENSOR", xPos, yPos + size + 22);
   }
 
   updateInfoPanel(data) {
-    const activeZones = data.zones.filter((z) => z.occupancy).length;
-    const totalZones = data.zones.length;
+    const activeZones = data.zones.filter(z => z.occupancy);
     const targetCount = data.targets ? data.targets.length : 0;
+    const postureLabels = { 0: "Standing", 1: "Sitting", 2: "Lying" };
 
-    this.infoPanel.innerHTML = `
-      <strong>Display Mode:</strong> ${this.displayMode === "full" ? "Full Grid (14×14)" : "Zoomed View"} |
-      <strong>Zones:</strong> ${activeZones}/${totalZones} occupied |
-      <strong>Targets:</strong> ${targetCount}
-    `;
+    let html = '';
+
+    // Presence status
+    const presClass = data.globalPresence ? "presence" : "no-presence";
+    html += `<span class="fp2-stat"><span class="fp2-dot ${presClass}"></span>${data.globalPresence ? "Occupied" : "Clear"}</span>`;
+
+    // People count
+    if (data.totalPeople > 0) {
+      html += `<span class="fp2-stat"><span class="fp2-dot target"></span>${data.totalPeople} ${data.totalPeople === 1 ? "person" : "people"}</span>`;
+    }
+
+    // Zone status
+    data.zones.forEach(z => {
+      const cls = z.occupancy ? "zone-on" : "zone-off";
+      const name = z.name || z.id;
+      html += `<span class="fp2-stat"><span class="fp2-dot ${cls}"></span>${name}</span>`;
+    });
+
+    // Target details
+    if (targetCount > 0) {
+      data.targets.forEach(t => {
+        const posture = postureLabels[t.posture] || "?";
+        html += `<span class="fp2-stat"><span class="fp2-dot target"></span>T${t.id}: ${posture}</span>`;
+      });
+    }
+
+    this.infoPanel.innerHTML = html;
   }
 
   handleCanvasClick(e) {
     if (!this.renderParams) return;
-
     const rect = this.canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
     const { minX, minY, cellSize } = this.renderParams;
-    const gridX = Math.floor(x / cellSize) + minX;
-    const gridY = Math.floor(y / cellSize) + minY;
-
-    console.log(`Clicked cell: (${gridX}, ${gridY})`);
-
-    // You can add more interactive features here
-    // e.g., show detailed info in a popup
-  }
-
-  handleCanvasHover(e) {
-    // Implement hover effects if needed
+    const gridX = Math.floor((e.clientX - rect.left) / cellSize) + minX;
+    const gridY = Math.floor((e.clientY - rect.top) / cellSize) + minY;
+    // Could show cell details in a popup
   }
 
   disconnectedCallback() {
-    if (this.resizeObserver) {
-      this.resizeObserver.disconnect();
-    }
+    if (this.resizeObserver) this.resizeObserver.disconnect();
+    if (this._pendingUpdate) clearTimeout(this._pendingUpdate);
   }
 
-  getCardSize() {
-    return 8;
-  }
+  getCardSize() { return 8; }
 
   getGridOptions() {
-    return {
-      rows: "auto",
-      columns: 6,
-      min_rows: 4,
-      max_rows: 12,
-    };
+    return { rows: "auto", columns: 6, min_rows: 4, max_rows: 12 };
   }
 }
 
 customElements.define("aqara-fp2-card", AqaraFP2Card);
-
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "aqara-fp2-card",
   name: "Aqara FP2 Presence Sensor Card",
-  description:
-    "Visualizes Aqara FP2 presence sensor data with zones and target tracking",
+  description: "Visualizes Aqara FP2 presence sensor data with zones and target tracking",
   preview: true,
 });
