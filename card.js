@@ -352,9 +352,13 @@ class AqaraFP2Card extends HTMLElement {
 
     const gridWidth = maxX - minX + 1;
     const gridHeight = maxY - minY + 1;
-    const cellSize = containerWidth / gridWidth;
+    const idealCellSize = containerWidth / gridWidth;
     const canvasWidth = containerWidth;
-    const canvasHeight = cellSize * gridHeight;
+    // Cap canvas height to prevent overflow on mobile (max 65% of viewport)
+    const maxCanvasHeight = window.innerHeight * 0.65;
+    const idealHeight = idealCellSize * gridHeight;
+    const canvasHeight = Math.min(idealHeight, maxCanvasHeight);
+    const cellSize = canvasHeight / gridHeight;
 
     this.canvas.width = canvasWidth * dpr;
     this.canvas.height = canvasHeight * dpr;
