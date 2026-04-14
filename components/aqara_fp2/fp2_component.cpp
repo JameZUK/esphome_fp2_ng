@@ -37,6 +37,7 @@ void FP2Component::setup() {
   // Reset internal state
   waiting_for_ack_attr_id_ = AttrId::INVALID;
   init_done_ = false;
+  radar_ready_ = false;
 
   // GPIO Reset
   perform_reset_();
@@ -163,8 +164,17 @@ void FP2Component::check_initialization_() {
   // The radar sends heartbeats during its boot phase but does NOT ACK
   // WRITE commands during this time. Non-heartbeat frames (temperature,
   // direction queries) only arrive after boot completes.
-  if (!radar_ready_)
-    return;
+  if (!radar_ready_) {
+    // Fallback: if heartbeats are flowing but no temperature/direction frame
+    // after 15 seconds, force init anyway (radar may not send temperature
+    // on some boot sequences)
+    if (last_heartbeat_millis_ > 0 && (millis() - last_heartbeat_millis_ > 15000)) {
+      ESP_LOGW(TAG, "Forcing init after 15s of heartbeats without temperature frame");
+      radar_ready_ = true;
+    } else {
+      return;
+    }
+  }
 
   ESP_LOGW(TAG, "*** Radar ready — starting init (uptime=%u ms) ***", millis());
     init_done_ = true;
