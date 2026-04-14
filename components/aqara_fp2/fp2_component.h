@@ -110,10 +110,10 @@ enum class OpCode : uint8_t {
 
 enum class AttrId : uint16_t {
     // --- System / Info ---
-    HW_VERSION                      = 0x0101, // Hardware version
+    HW_VERSION                      = 0x0101, // Hardware version (uint8, appended to SW version)
     RADAR_SW_VERSION                = 0x0102, // Software version / heartbeat (~1Hz)
     OTA_SET_FLAG                    = 0x0127, // OTA update flag
-    DEBUG_LOG                       = 0x0201, // Debug log output
+    DEBUG_LOG                       = 0x0201, // Radar MCU debug log (string, gated by debug_mode)
 
     // --- Detection Reports ---
     MOTION_DETECT                   = 0x0103, // Global motion (even=active, odd=inactive)
@@ -189,9 +189,7 @@ enum class AttrId : uint16_t {
     SLEEP_BED_HEIGHT                = 0x0177, // Bed/mattress height (uint16)
     OVERHEAD_HEIGHT                 = 0x0178, // Ceiling height (uint16)
 
-    // --- Hardware / Debug ---
-    HW_VERSION                      = 0x0101, // Hardware version (uint8)
-    DEBUG_LOG                       = 0x0201, // Radar MCU debug log (string)
+    // (HW_VERSION = 0x0101 and DEBUG_LOG = 0x0201 defined in System/Info section above)
 
     // --- Temperature ---
     TEMPERATURE                     = 0x0128, // Radar chip temperature
