@@ -21,6 +21,7 @@ namespace esphome {
 namespace aqara_fp2 {
 
 static const char *const TAG = "aqara_fp2";
+// Build marker: 20260414-v2 — forces recompilation
 
 // 40-byte Grid Map
 using GridMap = std::array<uint8_t, 40>;

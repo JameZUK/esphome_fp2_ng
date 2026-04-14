@@ -32,7 +32,8 @@ static uint16_t crc16(const uint8_t *data, size_t len) {
 }
 
 void FP2Component::setup() {
-  ESP_LOGE(TAG, "### SETUP: init_done=%d radar_ready=%d heartbeat=%u", init_done_, radar_ready_, last_heartbeat_millis_);
+  // Force recompile marker: 20260414-v2
+  ESP_LOGE(TAG, "### SETUP v2: init_done=%d radar_ready=%d heartbeat=%u", init_done_, radar_ready_, last_heartbeat_millis_);
 
   // Reset internal state
   waiting_for_ack_attr_id_ = AttrId::INVALID;
