@@ -157,10 +157,10 @@ class AqaraFP2Card extends HTMLElement {
         }
         #fp2-canvas {
           width: 100%;
-          height: auto;
           display: block;
           border-radius: 8px;
           box-sizing: border-box;
+          aspect-ratio: 1;
         }
         .fp2-info {
           display: flex;
@@ -341,14 +341,15 @@ class AqaraFP2Card extends HTMLElement {
 
     const gridWidth = maxX - minX + 1;
     const gridHeight = maxY - minY + 1;
-    const cellSize = containerWidth / gridWidth;
-    const canvasWidth = containerWidth;
-    const canvasHeight = cellSize * gridHeight;
+
+    // Use the actual rendered size of the canvas (controlled by CSS aspect-ratio)
+    const canvasRect = this.canvas.getBoundingClientRect();
+    const canvasWidth = canvasRect.width;
+    const canvasHeight = canvasRect.height;
+    const cellSize = Math.min(canvasWidth / gridWidth, canvasHeight / gridHeight);
 
     this.canvas.width = canvasWidth * dpr;
     this.canvas.height = canvasHeight * dpr;
-    this.canvas.style.width = `${canvasWidth}px`;
-    this.canvas.style.height = `${canvasHeight}px`;
     this.ctx.scale(dpr, dpr);
 
     this.renderParams = { minX, maxX, minY, maxY, cellSize, canvasWidth, canvasHeight };
