@@ -187,24 +187,30 @@ void FP2Component::loop() {
 }
 
 void FP2Component::check_initialization_() {
+  // Send init on first heartbeat, then re-send 45 seconds later
+  // (radar ACKs commands during boot but doesn't apply them)
+  static bool reinit_done = false;
+
+  if (init_done_ && !reinit_done && millis() > 45000) {
+    ESP_LOGE(TAG, "### RE-INIT at 45s: resending all commands to fully-booted radar");
+    reinit_done = true;
+    init_done_ = false;
+    diag_acks = 0;
+    diag_drops = 0;
+    diag_init_at = 0;
+    // Fall through to init code below
+  }
+
   if (init_done_)
     return;
 
-  if (!radar_ready_) {
-    // Log every 5 seconds while waiting
-    static uint32_t last_wait_log = 0;
-    if (millis() - last_wait_log > 5000) {
-      ESP_LOGE(TAG, "### WAITING: radar_ready=false, heartbeat=%u, uptime=%u",
-               last_heartbeat_millis_, millis());
-      last_wait_log = millis();
-    }
+  if (last_heartbeat_millis_ == 0)
     return;
-  }
 
   diag_init_at = millis();
-  diag_init_used_ready = true;
-  ESP_LOGE(TAG, "### === INIT FIRING NOW === uptime=%u radar_ready=%d heartbeat=%u",
-           millis(), radar_ready_, last_heartbeat_millis_);
+  diag_init_used_ready = reinit_done;
+  ESP_LOGE(TAG, "### === INIT FIRING === uptime=%u reinit=%d heartbeat=%u",
+           millis(), reinit_done, last_heartbeat_millis_);
     init_done_ = true;
 
     // 1. Basic Settings
