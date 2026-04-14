@@ -174,6 +174,8 @@ enum class AttrId : uint16_t {
     FALL_SENSITIVITY                = 0x0123, // Fall detection sensitivity
     FALL_OVERTIME_PERIOD            = 0x0134, // Fall overtime period
     FALL_OVERTIME_DETECTION         = 0x0135, // Fall overtime detection
+    FALL_DELAY_TIME                 = 0x0179, // Delay before confirming fall (uint16)
+    FALLDOWN_BLIND_ZONE             = 0x0180, // Fall detection exclusion zones (40B grid)
 
     // --- Sleep Monitoring ---
     SLEEP_REPORT_ENABLE             = 0x0156, // Enable sleep reporting (BOOL)
@@ -184,6 +186,12 @@ enum class AttrId : uint16_t {
     SLEEP_ZONE_SIZE                 = 0x0169, // Sleep zone dimensions
     SLEEP_IN_OUT                    = 0x0171, // Sleep zone entry/exit
     SLEEP_EVENT                     = 0x0176, // Sleep events
+    SLEEP_BED_HEIGHT                = 0x0177, // Bed/mattress height (uint16)
+    OVERHEAD_HEIGHT                 = 0x0178, // Ceiling height (uint16)
+
+    // --- Hardware / Debug ---
+    HW_VERSION                      = 0x0101, // Hardware version (uint8)
+    DEBUG_LOG                       = 0x0201, // Radar MCU debug log (string)
 
     // --- Temperature ---
     TEMPERATURE                     = 0x0128, // Radar chip temperature
@@ -303,6 +311,16 @@ public:
   void set_sleep_zone_size(uint32_t val) {
     sleep_zone_size_ = val;
   }
+  void set_fall_delay_time(uint16_t val) {
+    fall_delay_time_ = val;
+  }
+  void set_sleep_bed_height(uint16_t val) {
+    sleep_bed_height_ = val;
+  }
+  void set_overhead_height(uint16_t val) {
+    overhead_height_ = val;
+  }
+  void set_falldown_blind_zone(const std::vector<uint8_t> &grid);
 
   void set_interference_grid(const std::vector<uint8_t> &grid);
   void set_exit_grid(const std::vector<uint8_t> &grid);
@@ -492,9 +510,14 @@ protected:
   bool left_right_reverse_{false};
   uint8_t fall_detection_sensitivity_{1};
   uint32_t fall_overtime_period_{0};    // 0 = not configured (ms)
+  uint16_t fall_delay_time_{0};         // 0 = not configured
   bool dwell_time_enable_{false};
   uint8_t sleep_mount_position_{0};     // 0 = not configured
   uint32_t sleep_zone_size_{0};         // 0 = not configured
+  uint16_t sleep_bed_height_{0};        // 0 = not configured
+  uint16_t overhead_height_{0};         // 0 = not configured
+  GridMap falldown_blind_zone_{};
+  bool has_falldown_blind_zone_{false};
 
   // Grids (Optional)
   GridMap interference_grid_{};

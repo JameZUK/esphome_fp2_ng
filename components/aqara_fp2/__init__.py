@@ -90,6 +90,10 @@ CONF_FALL_OVERTIME_PERIOD = "fall_overtime_period"
 CONF_DELETE_FALSE_TARGETS = "delete_false_targets"
 CONF_SLEEP_MOUNT_POSITION = "sleep_mount_position"
 CONF_SLEEP_ZONE_SIZE = "sleep_zone_size"
+CONF_SLEEP_BED_HEIGHT = "sleep_bed_height"
+CONF_OVERHEAD_HEIGHT = "overhead_height"
+CONF_FALL_DELAY_TIME = "fall_delay_time"
+CONF_FALLDOWN_BLIND_ZONE = "falldown_blind_zone"
 CONF_POSTURE = "posture"
 CONF_SLEEP_STATE = "sleep_state"
 CONF_SLEEP_PRESENCE = "sleep_presence"
@@ -266,6 +270,10 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_DWELL_TIME_ENABLE): cv.boolean,
             cv.Optional(CONF_SLEEP_MOUNT_POSITION): cv.int_range(min=0, max=3),
             cv.Optional(CONF_SLEEP_ZONE_SIZE): cv.uint32_t,
+            cv.Optional(CONF_SLEEP_BED_HEIGHT): cv.uint16_t,
+            cv.Optional(CONF_OVERHEAD_HEIGHT): cv.uint16_t,
+            cv.Optional(CONF_FALL_DELAY_TIME): cv.uint16_t,
+            cv.Optional(CONF_FALLDOWN_BLIND_ZONE): parse_ascii_grid,
             cv.Optional(CONF_RADAR_OTA): button.button_schema(
                 FP2RadarOtaButton,
                 icon="mdi:chip",
@@ -431,6 +439,14 @@ async def to_code(config):
         cg.add(var.set_sleep_mount_position(config[CONF_SLEEP_MOUNT_POSITION]))
     if CONF_SLEEP_ZONE_SIZE in config:
         cg.add(var.set_sleep_zone_size(config[CONF_SLEEP_ZONE_SIZE]))
+    if CONF_SLEEP_BED_HEIGHT in config:
+        cg.add(var.set_sleep_bed_height(config[CONF_SLEEP_BED_HEIGHT]))
+    if CONF_OVERHEAD_HEIGHT in config:
+        cg.add(var.set_overhead_height(config[CONF_OVERHEAD_HEIGHT]))
+    if CONF_FALL_DELAY_TIME in config:
+        cg.add(var.set_fall_delay_time(config[CONF_FALL_DELAY_TIME]))
+    if CONF_FALLDOWN_BLIND_ZONE in config:
+        cg.add(var.set_falldown_blind_zone(config[CONF_FALLDOWN_BLIND_ZONE]))
 
     if CONF_GLOBAL_ZONE in config:
         global_zone_conf = config[CONF_GLOBAL_ZONE]

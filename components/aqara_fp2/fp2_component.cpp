@@ -278,6 +278,19 @@ void FP2Component::check_initialization_() {
       };
       enqueue_command_blob2_(AttrId::SLEEP_ZONE_SIZE, szs_data);
     }
+    if (fall_delay_time_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::FALL_DELAY_TIME, fall_delay_time_);
+    }
+    if (sleep_bed_height_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_BED_HEIGHT, sleep_bed_height_);
+    }
+    if (overhead_height_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::OVERHEAD_HEIGHT, overhead_height_);
+    }
+    if (has_falldown_blind_zone_) {
+      enqueue_command_blob2_(AttrId::FALLDOWN_BLIND_ZONE,
+          std::vector<uint8_t>(falldown_blind_zone_.begin(), falldown_blind_zone_.end()));
+    }
 
     // 2. Grids — all three must be sent every init for the radar to produce
     //    presence/motion reports.  Send configured grids or empty defaults.
@@ -351,6 +364,8 @@ void FP2Component::check_initialization_() {
         enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE, (uint16_t)((zone->id << 8) | 1));
     }
 
+    // Read hardware version from radar (appended to SW version string)
+    enqueue_read_(AttrId::HW_VERSION);
     // enqueue_read_((AttrId) 0x302); // Read radar flash ID attribute
     // enqueue_read_((AttrId) 0x303); // Read radar ID attribute
     // enqueue_read_((AttrId) 0x305); // Read radar calibration result attribute
@@ -700,6 +715,34 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         }
       }
       break;
+
+    case AttrId::HW_VERSION:
+        // 0x0101 — Hardware version byte from radar. Append to radar version string.
+        if (payload.size() >= 4 && payload[2] == 0x00) {
+            uint8_t hw_ver = payload[3];
+            ESP_LOGI(TAG, "Radar hardware version: %u", hw_ver);
+            if (radar_software_sensor_ != nullptr) {
+                // Append HW version to existing SW version: "99 (HW:3)"
+                std::string current = radar_software_sensor_->get_state();
+                if (current.find("HW:") == std::string::npos) {
+                    std::string combined = current + " (HW:" + std::to_string(hw_ver) + ")";
+                    radar_software_sensor_->publish_state(combined);
+                }
+            }
+        }
+        break;
+
+    case AttrId::DEBUG_LOG:
+        // 0x0201 — Debug log string from radar MCU (only when debug_mode enabled)
+        if (debug_mode_ && payload.size() >= 5 && payload[2] == 0x05) {
+            // STRING type: [SubID 2B] [Type 0x05] [Len_HI] [Len_LO] [chars...]
+            uint16_t str_len = (payload[3] << 8) | payload[4];
+            if (payload.size() >= 5 + str_len) {
+                std::string msg(payload.begin() + 5, payload.begin() + 5 + str_len);
+                ESP_LOGW(TAG, "[RADAR] %s", msg.c_str());
+            }
+        }
+        break;
 
     case AttrId::WORK_MODE:
         if (payload.size() == 4 && payload[2] == 0x00) {
@@ -1399,6 +1442,16 @@ void FP2Component::set_edge_grid(const std::vector<uint8_t> &grid) {
     ESP_LOGI(TAG, "Edge grid configured successfully");
   } else {
     ESP_LOGW(TAG, "Edge grid size mismatch! Expected 40, got %d", grid.size());
+  }
+}
+
+void FP2Component::set_falldown_blind_zone(const std::vector<uint8_t> &grid) {
+  ESP_LOGI(TAG, "set_falldown_blind_zone called with size: %d", grid.size());
+  if (grid.size() == 40) {
+    std::copy(grid.begin(), grid.end(), falldown_blind_zone_.begin());
+    has_falldown_blind_zone_ = true;
+  } else {
+    ESP_LOGW(TAG, "Falldown blind zone size mismatch! Expected 40, got %d", grid.size());
   }
 }
 
