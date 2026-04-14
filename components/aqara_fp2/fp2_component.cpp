@@ -171,20 +171,21 @@ void FP2Component::check_initialization_() {
   if (init_done_)
     return;
 
-  // Trigger init on first heartbeat. The command queue has timeouts and
-  // retries that handle any boot-phase NACKs.
-  if (last_heartbeat_millis_ == 0) {
-    // Log periodically while waiting for heartbeat
+  // Wait for radar to fully boot before sending config commands.
+  // The radar sends heartbeats for ~30-40 seconds during boot but does NOT
+  // process WRITE commands during this phase. Temperature (0x0128) or
+  // direction (0x0143) frames only arrive after boot completes.
+  if (!radar_ready_) {
     static uint32_t last_wait_log = 0;
-    if (debug_mode_ && millis() - last_wait_log > 5000) {
-      ESP_LOGW(TAG, "[DBG] Waiting for heartbeat... uptime=%u ms, no heartbeat yet", millis());
+    if (millis() - last_wait_log > 10000) {
+      ESP_LOGW(TAG, "Waiting for radar boot... uptime=%u ms, heartbeats=%s",
+               millis(), last_heartbeat_millis_ > 0 ? "YES" : "no");
       last_wait_log = millis();
     }
     return;
   }
 
-  ESP_LOGE(TAG, "=== INIT START (uptime=%u ms, first heartbeat=%u ms ago) ===",
-           millis(), millis() - last_heartbeat_millis_);
+  ESP_LOGE(TAG, "=== INIT START (uptime=%u ms) — radar boot complete ===", millis());
     init_done_ = true;
 
     // 1. Basic Settings
