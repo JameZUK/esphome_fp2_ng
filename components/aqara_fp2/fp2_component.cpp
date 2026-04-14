@@ -237,27 +237,38 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::THERMO_EN, true);
     enqueue_command_(OpCode::WRITE, AttrId::THERMO_DATA, (uint8_t) 1);
 
-    // 2. Grids
-    if (has_interference_grid_) {
+    // 2. Grids — all three must be sent every init for the radar to produce
+    //    presence/motion reports.  Send configured grids or empty defaults.
+    {
+      std::vector<uint8_t> empty_grid(40, 0x00);
+
       // 0x0110 Interference Source
       enqueue_command_blob2_(AttrId::INTERFERENCE_MAP,
-                             std::vector<uint8_t>(interference_grid_.begin(),
-                                                  interference_grid_.end()));
-    }
-    if (has_exit_grid_) {
+          has_interference_grid_
+              ? std::vector<uint8_t>(interference_grid_.begin(), interference_grid_.end())
+              : empty_grid);
+
       // 0x0109 Enter/Exit Label
-      enqueue_command_blob2_(
-          AttrId::ENTRY_EXIT_MAP, std::vector<uint8_t>(exit_grid_.begin(), exit_grid_.end()));
-    }
-    if (has_edge_grid_) {
-      // 0x0107 Edge Label
-      enqueue_command_blob2_(
-          AttrId::EDGE_MAP, std::vector<uint8_t>(edge_grid_.begin(), edge_grid_.end()));
-    } else {
-      // No edge_grid configured — DON'T send a default.
-      // Let the radar use its existing/factory edge grid.
-      // The upstream code also does not send an edge grid when unconfigured.
-      ESP_LOGI(TAG, "No edge_grid configured, using radar's existing boundary");
+      enqueue_command_blob2_(AttrId::ENTRY_EXIT_MAP,
+          has_exit_grid_
+              ? std::vector<uint8_t>(exit_grid_.begin(), exit_grid_.end())
+              : empty_grid);
+
+      // 0x0107 Edge Label — full-coverage default when not configured
+      if (has_edge_grid_) {
+        enqueue_command_blob2_(AttrId::EDGE_MAP,
+            std::vector<uint8_t>(edge_grid_.begin(), edge_grid_.end()));
+      } else {
+        GridMap default_edge;
+        default_edge.fill(0);
+        for (int r = 0; r < 14; r++) {
+          default_edge[r * 2] = 0x3F;      // cols 2-7
+          default_edge[r * 2 + 1] = 0xFF;  // cols 8-15
+        }
+        enqueue_command_blob2_(AttrId::EDGE_MAP,
+            std::vector<uint8_t>(default_edge.begin(), default_edge.end()));
+        ESP_LOGI(TAG, "No edge_grid configured, sending full-coverage default");
+      }
     }
 
     // 3. Zones
