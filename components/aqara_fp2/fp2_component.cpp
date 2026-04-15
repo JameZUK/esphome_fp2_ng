@@ -100,6 +100,24 @@ void FP2LocationSwitch::write_state(bool state) {
   this->publish_state(state);
 }
 
+void FP2SleepModeSwitch::write_state(bool state) {
+  if (this->parent_ != nullptr) {
+    this->parent_->set_sleep_mode_enabled(state);
+  }
+  this->publish_state(state);
+}
+
+void FP2Component::set_sleep_mode_enabled(bool enabled) {
+  ESP_LOGI(TAG, "Sleep mode %s", enabled ? "ENABLED" : "DISABLED");
+  sleep_mode_active_ = enabled;
+  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, enabled);
+  if (enabled) {
+    publish_radar_state_("Sleep");
+  }
+  // When disabling sleep, the radar will restart into mode 3 (presence).
+  // Presence reports will resume after the radar reboots (~38s + re-init).
+}
+
 void FP2Component::trigger_edge_calibration() {
   ESP_LOGI(TAG, "Starting edge auto-calibration...");
   enqueue_command_(OpCode::WRITE, AttrId::EDGE_AUTO_ENABLE, true);
@@ -364,12 +382,10 @@ void FP2Component::check_initialization_() {
     // HW_VERSION read removed — radar doesn't respond to READ requests for 0x0101,
     // and any READ in the 0x01xx range triggers scene mode 3 which clears sleep_report_enable.
 
-    // SLEEP_REPORT_ENABLE must be the LAST command sent.
-    // The radar's scene mode system (FUN_00025dfc) maps 0x01xx WRITEs to scene mode 11,
-    // and 0x01xx READs to scene mode 3. Scene mode transition from 11→3 (FUN_00013d9c)
-    // explicitly clears sleep_report_enable. By sending it last with no subsequent READs,
-    // the radar transitions to scene mode 9 (sleep) and stays there.
-    enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, true);
+    // SLEEP_REPORT_ENABLE is NOT sent during init — it's controlled by the
+    // sleep_mode_switch. Sleep and presence are mutually exclusive radar modes
+    // (scene mode 9 vs 3). The switch sends SLEEP_REPORT_ENABLE and suppresses
+    // 0x01xx ACKs to prevent the scene mode mapper from clearing it.
 
     // 5. Publish grid sensors once initialization completes
     ESP_LOGI(TAG, "Publishing grid sensors: has_edge=%d edge_sensor=%p has_exit=%d exit_sensor=%p has_interference=%d interference_sensor=%p",
@@ -694,9 +710,18 @@ void FP2Component::handle_ack_(AttrId attr_id) {
 }
 
 void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &payload) {
-  // Send ACK for all reports except heartbeat
+  // Send ACK for reports, with sleep mode protection.
+  // The radar's scene mode mapper (FUN_00025dfc) treats any received opcode != 1
+  // for SubIDs 0x0100-0x017F as triggering scene mode 3, which clears
+  // sleep_report_enable. To prevent this, suppress ACKs for 0x01xx SubIDs
+  // when sleep mode is active.
+  uint16_t sid = (uint16_t) attr_id;
   if (attr_id != AttrId::RADAR_SW_VERSION) {
-    send_ack_(attr_id);
+    if (sleep_mode_active_ && sid >= 0x0100 && sid < 0x0180) {
+      // Don't ACK — would reset radar to scene mode 3 and clear sleep
+    } else {
+      send_ack_(attr_id);
+    }
   }
 
   // Process specific report types

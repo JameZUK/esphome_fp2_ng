@@ -219,6 +219,15 @@ protected:
   FP2Component *parent_{nullptr};
 };
 
+class FP2SleepModeSwitch : public switch_::Switch {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void write_state(bool state) override;
+  FP2Component *parent_{nullptr};
+};
+
 class FP2CalibrateEdgeButton : public button::Button {
 public:
   void set_parent(FP2Component *parent) { parent_ = parent; }
@@ -345,6 +354,11 @@ public:
     location_report_switch_ = sw;
     sw->set_parent(this);
   }
+  void set_sleep_mode_switch(FP2SleepModeSwitch *sw) {
+    sleep_mode_switch_ = sw;
+    sw->set_parent(this);
+  }
+  void set_sleep_mode_enabled(bool enabled);
 
   void set_calibrate_edge_button(FP2CalibrateEdgeButton *btn) {
     calibrate_edge_button_ = btn;
@@ -538,6 +552,8 @@ protected:
   std::vector<FP2Zone*> zones_;
   text_sensor::TextSensor *target_tracking_sensor_{nullptr};
   FP2LocationSwitch *location_report_switch_{nullptr};
+  FP2SleepModeSwitch *sleep_mode_switch_{nullptr};
+  bool sleep_mode_active_{false};
   FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};
   FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
   FP2ClearEdgeButton *clear_edge_button_{nullptr};
