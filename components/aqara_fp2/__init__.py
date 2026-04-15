@@ -30,7 +30,7 @@ from esphome.util import Registry
 from ..aqara_fp2_accel import AqaraFP2Accel
 
 DEPENDENCIES = ["uart"]
-AUTO_LOAD = ["binary_sensor", "button", "text_sensor", "sensor", "switch", "json"]
+AUTO_LOAD = ["binary_sensor", "button", "select", "text_sensor", "sensor", "switch", "json"]
 # esp_http_client is needed for radar firmware OTA download
 CODEOWNERS = ["@JameZUK"]
 
