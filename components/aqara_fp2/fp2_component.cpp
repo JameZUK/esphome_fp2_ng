@@ -100,45 +100,6 @@ void FP2LocationSwitch::write_state(bool state) {
   this->publish_state(state);
 }
 
-void FP2SleepModeSwitch::write_state(bool state) {
-  if (this->parent_ != nullptr) {
-    this->parent_->set_sleep_mode_enabled(state);
-  }
-  this->publish_state(state);
-}
-
-void FP2Component::set_sleep_mode_enabled(bool enabled) {
-  // Step 1: Write SLEEP_REPORT_ENABLE to the radar's RAM (SubID 0x0156).
-  //   The standard config write handler stores at struct offset 0xb6c.
-  //   This does NOT write to flash — only FUN_00013d9c does that.
-  //
-  // Step 2: Write SCENE_MODE via SubID 0x0116 (value 9 for sleep, 3 for presence).
-  //   This triggers FUN_00013d9c which:
-  //   - Checks if new_mode != current_mode
-  //   - If modes 3/5 and sleep_report_enable==1: clears sleep (exit path)
-  //   - Writes ENTIRE config struct (including sleep_report_enable) to flash
-  //   - Restarts the radar
-  //
-  //   For sleep enable: mode 3→9, sleep=1, flash written, restart.
-  //     On boot: FUN_000257d4 sees sleep=1 → mode 9.
-  //   For sleep disable: mode 9→3, FUN_00013d9c clears sleep=0, flash written, restart.
-  //     On boot: mode 3 (normal presence).
-  ESP_LOGI(TAG, "Sleep mode %s", enabled ? "ENABLED" : "DISABLED");
-  sleep_mode_active_ = enabled;
-  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, enabled);
-  // WORK_MODE write triggers flash save + radar self-restart
-  enqueue_command_(OpCode::WRITE, (AttrId) 0x0116, (uint8_t)(enabled ? 9 : 3));
-  publish_radar_state_(enabled ? "Sleep" : "Booting");
-
-  // The WORK_MODE write causes the radar to self-restart (~38s boot).
-  // Reset our init state so we re-send all config on first heartbeat.
-  init_done_ = false;
-  radar_ready_ = false;
-  last_heartbeat_millis_ = 0;
-  // Reset the reinit_done static — need fresh double-init after restart
-  // (handled by setting init_done_ = false, reinit fires at 45s)
-}
-
 void FP2OperatingModeSelect::control(const std::string &value) {
   if (this->parent_ != nullptr) {
     this->parent_->set_operating_mode(value);

@@ -37,7 +37,6 @@ CODEOWNERS = ["@JameZUK"]
 aqara_fp2_ns = cg.esphome_ns.namespace("aqara_fp2")
 FP2Component = aqara_fp2_ns.class_("FP2Component", cg.Component, uart.UARTDevice)
 FP2LocationSwitch = aqara_fp2_ns.class_("FP2LocationSwitch", switch.Switch)
-FP2SleepModeSwitch = aqara_fp2_ns.class_("FP2SleepModeSwitch", switch.Switch)
 FP2OperatingModeSelect = aqara_fp2_ns.class_("FP2OperatingModeSelect", select.Select)
 FP2CalibrateEdgeButton = aqara_fp2_ns.class_("FP2CalibrateEdgeButton", button.Button)
 FP2CalibrateInterferenceButton = aqara_fp2_ns.class_("FP2CalibrateInterferenceButton", button.Button)
@@ -96,7 +95,6 @@ CONF_SLEEP_BED_HEIGHT = "sleep_bed_height"
 CONF_OVERHEAD_HEIGHT = "overhead_height"
 CONF_FALL_DELAY_TIME = "fall_delay_time"
 CONF_FALLDOWN_BLIND_ZONE = "falldown_blind_zone"
-CONF_SLEEP_MODE_SWITCH = "sleep_mode_switch"
 CONF_OPERATING_MODE = "operating_mode"
 CONF_POSTURE = "posture"
 CONF_SLEEP_STATE = "sleep_state"
@@ -242,10 +240,6 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_LOCATION_REPORT_SWITCH): switch.switch_schema(
                 FP2LocationSwitch
             ),
-            cv.Optional(CONF_SLEEP_MODE_SWITCH): switch.switch_schema(
-                FP2SleepModeSwitch,
-                icon="mdi:sleep",
-            ),
             cv.Optional(CONF_OPERATING_MODE): select.select_schema(
                 FP2OperatingModeSelect,
                 icon="mdi:radar",
@@ -378,8 +372,7 @@ SENSOR_MAP = {
     CONF_RADAR_SOFTWARE_VERSION: (text_sensor_.new_text_sensor, "set_radar_software_sensor"),
     CONF_RADAR_STATE: (text_sensor_.new_text_sensor, "set_radar_state_sensor"),
     CONF_LOCATION_REPORT_SWITCH: (switch.new_switch, "set_location_report_switch"),
-    CONF_SLEEP_MODE_SWITCH: (switch.new_switch, "set_sleep_mode_switch"),
-    # CONF_OPERATING_MODE handled separately (needs options kwarg)
+    # CONF_OPERATING_MODE handled separately below (needs options kwarg)
     CONF_CALIBRATE_EDGE: (button.new_button, "set_calibrate_edge_button"),
     CONF_CALIBRATE_INTERFERENCE: (button.new_button, "set_calibrate_interference_button"),
     CONF_CLEAR_EDGE: (button.new_button, "set_clear_edge_button"),
