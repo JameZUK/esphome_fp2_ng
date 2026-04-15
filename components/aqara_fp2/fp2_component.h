@@ -170,12 +170,15 @@ enum class AttrId : uint16_t {
     WALK_DISTANCE_ALL               = 0x0174, // Walking distance data
 
     // --- Fall Detection ---
-    FALL_DETECTION                  = 0x0121, // Fall detection event
+    ANGLE_SENSOR_REV                = 0x0121, // Angle sensor revision (NOT fall detection)
+    FALL_DETECTION_STATE            = 0x0122, // Fall detection state (stock ESP32 handler, radar doesn't send)
     FALL_SENSITIVITY                = 0x0123, // Fall detection sensitivity
     FALL_OVERTIME_PERIOD            = 0x0134, // Fall overtime period
-    FALL_OVERTIME_DETECTION         = 0x0135, // Fall overtime detection
+    FALL_OVERTIME_DETECTION         = 0x0135, // Fall overtime config (handler at 0x400e11ac)
+    FALL_OVERTIME_REPORT            = 0x0136, // Fall overtime report (radar_fall_overtime_det)
     FALL_DELAY_TIME                 = 0x0179, // Delay before confirming fall (uint16)
     FALLDOWN_BLIND_ZONE             = 0x0180, // Fall detection exclusion zones (40B grid)
+    FALL_DETECTION_RESULT           = 0x0306, // ACTUAL fall detection from radar (uint8: 0=no fall, 1=fall)
 
     // --- Sleep Monitoring ---
     SLEEP_REPORT_ENABLE             = 0x0156, // Enable sleep reporting (BOOL)

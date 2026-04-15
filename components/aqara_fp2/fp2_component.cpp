@@ -812,6 +812,13 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 if (people_count_sensor_ != nullptr) {
                     people_count_sensor_->publish_state(0);
                 }
+                // Clear fall detection
+                if (fall_detection_sensor_ != nullptr) {
+                    fall_detection_sensor_->publish_state(false);
+                }
+                if (fall_overtime_sensor_ != nullptr) {
+                    fall_overtime_sensor_->publish_state(false);
+                }
                 // Clear sleep-related sensors
                 if (sleep_state_sensor_ != nullptr) {
                     sleep_state_sensor_->publish_state("none");
@@ -892,12 +899,25 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         }
         break;
 
-    case AttrId::FALL_DETECTION:
-        // 0x0121 — NOT sent by the radar directly (confirmed via firmware RE).
-        // Kept as a fallback in case future radar firmware adds it.
+    case AttrId::FALL_DETECTION_RESULT:
+        // 0x0306 — ACTUAL fall detection result from radar's fall state machine.
+        // Sent as opcode 4 (RESPONSE) with UINT8: 0=no fall, 1=fall detected.
+        // Confirmed via Ghidra RE: radar FUN_000244f8 sends this from offset +0x589.
         if (payload.size() >= 4 && payload[2] == 0x00) {
             uint8_t state = payload[3];
-            ESP_LOGI(TAG, "Fall detection report (0x0121): %u", state);
+            ESP_LOGI(TAG, "Fall detection result (0x0306): %u", state);
+            if (fall_detection_sensor_ != nullptr) {
+                fall_detection_sensor_->publish_state(state != 0);
+            }
+        }
+        break;
+
+    case AttrId::FALL_DETECTION_STATE:
+        // 0x0122 — Stock ESP32 handler exists but radar never sends this SubID.
+        // Kept for completeness.
+        if (payload.size() >= 4 && payload[2] == 0x00) {
+            uint8_t state = payload[3];
+            ESP_LOGI(TAG, "Fall detection state (0x0122): %u", state);
             if (fall_detection_sensor_ != nullptr) {
                 fall_detection_sensor_->publish_state(state != 0);
             }
@@ -905,39 +925,24 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::PEOPLE_COUNTING:
-        // 0x0155 — BLOB2, 7 bytes per report. Sent from radar's fall/people
-        // counting function. This is the ACTUAL source of fall detection data.
-        // Format: [ZoneID:1] [PeopleCount:2 BE] [OntimeValue:4 BE]
-        // The ontime value is a scaled float representing dwell/presence duration.
-        // Non-zero ontime with people present indicates a fall-like event
-        // (person stationary for extended period in a detected position).
+        // 0x0155 — BLOB2, 7 bytes per report. People counting + dwell time.
+        // Format: [ZoneID:1] [PeopleCount:2 BE] [DwellTime:4 BE]
+        // DwellTime = 0.15 * cumulative_frame_count (NOT a fall indicator).
+        // This SubID is sent from the radar's people counting function, which
+        // also handles the "fall area" debug output — but the ontime/dwell field
+        // is NOT fall detection. Actual fall detection uses SubID 0x0306.
         if (payload.size() >= 12 && payload[2] == 0x06) {
-            // BLOB2: [SubID 2B] [Type 0x06] [Len_HI] [Len_LO] [Data 7B]
             uint16_t blob_len = (payload[3] << 8) | payload[4];
             if (blob_len >= 7 && payload.size() >= 5 + blob_len) {
                 uint8_t zone_id = payload[5];
                 uint16_t people_count = (payload[6] << 8) | payload[7];
-                uint32_t ontime_value = ((uint32_t)payload[8] << 24) |
-                                        ((uint32_t)payload[9] << 16) |
-                                        ((uint32_t)payload[10] << 8) |
-                                        ((uint32_t)payload[11]);
+                uint32_t dwell_time = ((uint32_t)payload[8] << 24) |
+                                      ((uint32_t)payload[9] << 16) |
+                                      ((uint32_t)payload[10] << 8) |
+                                      ((uint32_t)payload[11]);
 
-                ESP_LOGI(TAG, "People counting (0x0155): zone=%u people=%u ontime=%u",
-                         zone_id, people_count, ontime_value);
-
-                // Fall detection: non-zero ontime indicates a fall event
-                // (radar's fall detection algorithm triggers this)
-                if (ontime_value != 0 && fall_detection_sensor_ != nullptr) {
-                    ESP_LOGW(TAG, "Fall detected via 0x0155! zone=%u ontime=%u",
-                             zone_id, ontime_value);
-                    fall_detection_sensor_->publish_state(true);
-                }
-
-                // Clear fall state when ontime returns to zero
-                if (ontime_value == 0 && fall_detection_sensor_ != nullptr &&
-                    fall_detection_sensor_->state) {
-                    fall_detection_sensor_->publish_state(false);
-                }
+                ESP_LOGD(TAG, "People counting (0x0155): zone=%u people=%u dwell=%u",
+                         zone_id, people_count, dwell_time);
 
                 // Update per-zone people count if zone matches
                 if (zone_id > 0) {
@@ -956,12 +961,14 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::FALL_OVERTIME_DETECTION:
-        // 0x0135 — Reports when a fall has persisted beyond the configured overtime period.
-        // This indicates an emergency (person unable to get up).
+    case AttrId::FALL_OVERTIME_REPORT:
+        // 0x0135/0x0136 — Fall overtime. Handler for both SubIDs since dispatch
+        // table analysis shows radar_fall_overtime_det handles 0x0136 while
+        // 0x0135 goes to a config handler. Accept either.
         if (payload.size() >= 7 && payload[2] == 0x02) {
             uint32_t value = ((uint32_t)payload[3] << 24) | ((uint32_t)payload[4] << 16) |
                              ((uint32_t)payload[5] << 8) | ((uint32_t)payload[6]);
-            ESP_LOGW(TAG, "Fall overtime detection: value=%u", value);
+            ESP_LOGW(TAG, "Fall overtime (0x%04X): value=%u", (uint16_t)attr_id, value);
             if (fall_overtime_sensor_ != nullptr) {
                 fall_overtime_sensor_->publish_state(value != 0);
             }
