@@ -138,7 +138,7 @@ uart:
   baud_rate: 890000
 
 external_components:
-  - source: github://JameZUK/esphome_fp2_ng@v1.1.4
+  - source: github://JameZUK/esphome_fp2_ng@v1.1.5
     refresh: 0s
     components: [ aqara_fp2, aqara_fp2_accel ]
 
