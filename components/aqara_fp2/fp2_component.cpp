@@ -1,4 +1,5 @@
 #include "fp2_component.h"
+#include "esphome/components/api/api_server.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/hal.h"
@@ -244,18 +245,21 @@ void FP2CalibrateInterferenceButton::press_action() {
 }
 
 void FP2Component::loop() {
-  // Publish restored operating mode after API has time to connect (~15s)
-  if (!operating_mode_published_ && operating_mode_select_ != nullptr && millis() > 15000) {
-    uint8_t mode = 0;
-    if (operating_mode_pref_.load(&mode) && mode < 4) {
+  // Publish restored operating mode once HA API client is connected
+  if (!operating_mode_published_ && operating_mode_select_ != nullptr) {
+    auto *server = api::global_api_server;
+    if (server != nullptr && server->is_connected()) {
+      uint8_t mode = 0;
       static const char *NAMES[] = {"Zone Detection", "Fall Detection", "Sleep Monitoring", "Fall + Positioning"};
-      operating_mode_select_->publish_state(NAMES[mode]);
-      ESP_LOGI(TAG, "Published restored operating mode: %s", NAMES[mode]);
-    } else {
-      operating_mode_select_->publish_state("Zone Detection");
-      ESP_LOGI(TAG, "No saved operating mode, defaulting to Zone Detection");
+      if (operating_mode_pref_.load(&mode) && mode < 4) {
+        operating_mode_select_->publish_state(NAMES[mode]);
+        ESP_LOGI(TAG, "Published restored operating mode: %s", NAMES[mode]);
+      } else {
+        operating_mode_select_->publish_state(NAMES[0]);
+        ESP_LOGI(TAG, "No saved mode, defaulting to Zone Detection");
+      }
+      operating_mode_published_ = true;
     }
-    operating_mode_published_ = true;
   }
 
   // During OTA, bypass normal protocol and run XMODEM state machine
