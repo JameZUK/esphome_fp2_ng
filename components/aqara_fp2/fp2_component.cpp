@@ -108,29 +108,27 @@ void FP2SleepModeSwitch::write_state(bool state) {
 }
 
 void FP2Component::set_sleep_mode_enabled(bool enabled) {
-  // Writing SLEEP_REPORT_ENABLE (0x0156) while already in mode 3 is safe:
-  // the scene mode mapper returns mode 3, FUN_00013d9c sees 3==3 and
-  // returns without clearing sleep. The value is stored in flash.
+  // Step 1: Write SLEEP_REPORT_ENABLE to the radar's RAM (SubID 0x0156).
+  //   The standard config write handler stores at struct offset 0xb6c.
+  //   This does NOT write to flash — only FUN_00013d9c does that.
   //
-  // But the runtime mode only changes to 9 during boot (FUN_000257d4).
-  // So we must reset the radar after writing the flag. On boot:
-  // - Mode defaults to 3
-  // - FUN_000257d4 checks sleep_report_enable=1 → overrides to mode 9
-  // - We skip ALL init commands (no 0x01xx WRITEs that would trigger mode 3)
-  // - DSP runs vital signs with its built-in defaults
+  // Step 2: Write SCENE_MODE via SubID 0x0116 (value 9 for sleep, 3 for presence).
+  //   This triggers FUN_00013d9c which:
+  //   - Checks if new_mode != current_mode
+  //   - If modes 3/5 and sleep_report_enable==1: clears sleep (exit path)
+  //   - Writes ENTIRE config struct (including sleep_report_enable) to flash
+  //   - Restarts the radar
+  //
+  //   For sleep enable: mode 3→9, sleep=1, flash written, restart.
+  //     On boot: FUN_000257d4 sees sleep=1 → mode 9.
+  //   For sleep disable: mode 9→3, FUN_00013d9c clears sleep=0, flash written, restart.
+  //     On boot: mode 3 (normal presence).
   ESP_LOGI(TAG, "Sleep mode %s", enabled ? "ENABLED" : "DISABLED");
   sleep_mode_active_ = enabled;
   enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, enabled);
+  // WORK_MODE write triggers flash save + radar restart
+  enqueue_command_(OpCode::WRITE, (AttrId) 0x0116, (uint8_t)(enabled ? 9 : 3));
   publish_radar_state_(enabled ? "Sleep" : "Booting");
-
-  // Wait for the WRITE to be sent and ACKed, then reset
-  set_timeout("radar_sleep_reset", 2000, [this]() {
-    ESP_LOGI(TAG, "Resetting radar for sleep/presence mode change...");
-    perform_reset_();
-    init_done_ = false;
-    radar_ready_ = false;
-    last_heartbeat_millis_ = 0;
-  });
 }
 
 void FP2Component::trigger_edge_calibration() {
