@@ -3,7 +3,7 @@ import json
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import pins
-from esphome.components import binary_sensor, button, sensor, switch, uart
+from esphome.components import binary_sensor, button, select, sensor, switch, uart
 from esphome.components import text_sensor as text_sensor_
 from esphome.const import (
     CONF_DEVICE_CLASS,
@@ -38,6 +38,7 @@ aqara_fp2_ns = cg.esphome_ns.namespace("aqara_fp2")
 FP2Component = aqara_fp2_ns.class_("FP2Component", cg.Component, uart.UARTDevice)
 FP2LocationSwitch = aqara_fp2_ns.class_("FP2LocationSwitch", switch.Switch)
 FP2SleepModeSwitch = aqara_fp2_ns.class_("FP2SleepModeSwitch", switch.Switch)
+FP2OperatingModeSelect = aqara_fp2_ns.class_("FP2OperatingModeSelect", select.Select)
 FP2CalibrateEdgeButton = aqara_fp2_ns.class_("FP2CalibrateEdgeButton", button.Button)
 FP2CalibrateInterferenceButton = aqara_fp2_ns.class_("FP2CalibrateInterferenceButton", button.Button)
 FP2ClearEdgeButton = aqara_fp2_ns.class_("FP2ClearEdgeButton", button.Button)
@@ -96,6 +97,7 @@ CONF_OVERHEAD_HEIGHT = "overhead_height"
 CONF_FALL_DELAY_TIME = "fall_delay_time"
 CONF_FALLDOWN_BLIND_ZONE = "falldown_blind_zone"
 CONF_SLEEP_MODE_SWITCH = "sleep_mode_switch"
+CONF_OPERATING_MODE = "operating_mode"
 CONF_POSTURE = "posture"
 CONF_SLEEP_STATE = "sleep_state"
 CONF_SLEEP_PRESENCE = "sleep_presence"
@@ -244,6 +246,10 @@ CONFIG_SCHEMA = (
                 FP2SleepModeSwitch,
                 icon="mdi:sleep",
             ),
+            cv.Optional(CONF_OPERATING_MODE): select.select_schema(
+                FP2OperatingModeSelect,
+                icon="mdi:radar",
+            ),
             cv.Optional(CONF_CALIBRATE_EDGE): button.button_schema(
                 FP2CalibrateEdgeButton,
                 icon="mdi:border-all-variant",
@@ -373,6 +379,7 @@ SENSOR_MAP = {
     CONF_RADAR_STATE: (text_sensor_.new_text_sensor, "set_radar_state_sensor"),
     CONF_LOCATION_REPORT_SWITCH: (switch.new_switch, "set_location_report_switch"),
     CONF_SLEEP_MODE_SWITCH: (switch.new_switch, "set_sleep_mode_switch"),
+    CONF_OPERATING_MODE: (select.new_select, "set_operating_mode_select"),
     CONF_CALIBRATE_EDGE: (button.new_button, "set_calibrate_edge_button"),
     CONF_CALIBRATE_INTERFERENCE: (button.new_button, "set_calibrate_interference_button"),
     CONF_CLEAR_EDGE: (button.new_button, "set_clear_edge_button"),
@@ -481,6 +488,14 @@ async def to_code(config):
         if key in config:
             sens = await new(config[key])
             cg.add(getattr(var, funcName)(sens))
+            # Set options for operating mode select
+            if key == CONF_OPERATING_MODE:
+                cg.add(sens.traits.set_options([
+                    "Zone Detection",
+                    "Fall Detection",
+                    "Sleep Monitoring",
+                    "Fall + Positioning",
+                ]))
 
     if CONF_TARGET_TRACKING_INTERVAL in config:
         cg.add(var.set_target_tracking_interval(config[CONF_TARGET_TRACKING_INTERVAL]))

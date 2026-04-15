@@ -139,6 +139,63 @@ void FP2Component::set_sleep_mode_enabled(bool enabled) {
   // (handled by setting init_done_ = false, reinit fires at 45s)
 }
 
+void FP2OperatingModeSelect::control(const std::string &value) {
+  if (this->parent_ != nullptr) {
+    this->parent_->set_operating_mode(value);
+  }
+  this->publish_state(value);
+}
+
+void FP2Component::set_operating_mode(const std::string &mode) {
+  // All 4 modes use the same radar firmware. Mode is changed by:
+  // 1. Setting SLEEP_REPORT_ENABLE (needed for mode 9)
+  // 2. Writing WORK_MODE (SubID 0x0116) which triggers FUN_00013d9c:
+  //    flash save + radar self-restart
+  // 3. Resetting our init state for re-init after restart
+  //
+  // Scene modes confirmed via Ghidra:
+  //   3 = Zone Detection (wall, multi-person, Config A chirp)
+  //   8 = Fall Detection (ceiling, single person, Config B chirp)
+  //   9 = Sleep Monitoring (bedside, single person, Config B chirp)
+  //   Fall + Positioning = mode 8 with location reporting enabled
+
+  uint8_t scene_mode = 3;
+  bool sleep = false;
+
+  if (mode == "Zone Detection") {
+    scene_mode = 3;
+  } else if (mode == "Fall Detection") {
+    scene_mode = 8;
+  } else if (mode == "Sleep Monitoring") {
+    scene_mode = 9;
+    sleep = true;
+  } else if (mode == "Fall + Positioning") {
+    scene_mode = 8;
+  } else {
+    ESP_LOGW(TAG, "Unknown operating mode: %s", mode.c_str());
+    return;
+  }
+
+  ESP_LOGI(TAG, "Operating mode: %s (scene=%d, sleep=%d)", mode.c_str(), scene_mode, sleep);
+  sleep_mode_active_ = sleep;
+
+  // Write sleep enable flag to radar RAM
+  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep);
+  // WORK_MODE write triggers flash save + radar self-restart
+  enqueue_command_(OpCode::WRITE, (AttrId) 0x0116, scene_mode);
+
+  publish_radar_state_(sleep ? "Sleep" : "Booting");
+
+  // Reset init state — radar will self-restart
+  init_done_ = false;
+  radar_ready_ = false;
+  last_heartbeat_millis_ = 0;
+
+  // For Fall + Positioning, location reporting is enabled during init.
+  // For other modes it follows the location_report_switch setting.
+  // The init sequence already sends LOCATION_REPORT_ENABLE=1 always.
+}
+
 void FP2Component::trigger_edge_calibration() {
   ESP_LOGI(TAG, "Starting edge auto-calibration...");
   enqueue_command_(OpCode::WRITE, AttrId::EDGE_AUTO_ENABLE, true);
