@@ -195,9 +195,9 @@ aqara_fp2:
   location_report_switch:
     name: "Report Targets"
 
-  # Sleep mode (mutually exclusive with presence detection)
-  sleep_mode_switch:
-    name: "Sleep Mode"
+  # Operating mode (all 4 modes, mutually exclusive)
+  operating_mode:
+    name: "Operating Mode"
 
   # Auto-calibration / maintenance
   calibrate_edge:
@@ -294,7 +294,7 @@ show_zone_labels: true  # Show zone labels (default: true)
 | `fall_delay_time` | config (uint16) | Delay before confirming a fall event |
 | `falldown_blind_zone` | config (grid) | 14x14 ASCII grid for fall detection exclusion zones |
 | `radar_state` | text_sensor | Booting / Init sent / Re-init / Ready / Presence / Sleep |
-| `sleep_mode_switch` | switch | Toggle sleep monitoring (mutually exclusive with presence) |
+| `operating_mode` | select | Operating mode: Zone Detection / Fall Detection / Sleep Monitoring / Fall + Positioning |
 | `sleep_state` | text_sensor | none / awake / light / deep (requires sleep mode ON) |
 | `sleep_presence` | binary_sensor | Sleep zone occupancy (requires sleep mode ON) |
 | `heart_rate` | sensor (bpm) | Heart rate (requires sleep mode ON) |
@@ -401,7 +401,7 @@ The stock Aqara app presents four operating modes. All use the **same radar firm
 
 **Chirp Config B** (ceiling/bedside): 60.624 GHz, 20us ramp, 512 ADC samples, 68 chirps/frame at 6.67fps — optimised for static/slow targets and micro-movement detection.
 
-The `sleep_mode_switch` toggles between Zone Detection (mode 3) and Sleep Monitoring (mode 9). These modes are **mutually exclusive** — the radar self-restarts on each toggle (~38 seconds).
+The `operating_mode` select switches between all four modes. They are **mutually exclusive** — the radar self-restarts on each change (~38 seconds). Use HA automations to switch modes on a schedule (e.g., Sleep Monitoring at bedtime, Zone Detection in the morning).
 
 ### Mounting Position Matters
 
