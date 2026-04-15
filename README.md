@@ -195,6 +195,10 @@ aqara_fp2:
   location_report_switch:
     name: "Report Targets"
 
+  # Sleep mode (mutually exclusive with presence detection)
+  sleep_mode_switch:
+    name: "Sleep Mode"
+
   # Auto-calibration / maintenance
   calibrate_edge:
     name: "Calibrate Room Boundaries"
@@ -284,24 +288,24 @@ show_zone_labels: true  # Show zone labels (default: true)
 | Config Key | Type | Description |
 |------------|------|-------------|
 | `people_count` | sensor | Total detected person count |
-| `fall_detection` | binary_sensor | Fall detected (via 0x0155 PEOPLE_COUNTING) |
-| `fall_overtime` | binary_sensor | Prolonged fall alert (person unable to get up) |
+| `fall_detection` | binary_sensor | Fall detected (via SubID 0x0306 from radar fall state machine) |
 | `fall_overtime` | binary_sensor | Prolonged fall alert (person unable to get up) |
 | `fall_overtime_period` | config (ms) | Time before overtime triggers (e.g. `30000ms`) |
 | `fall_delay_time` | config (uint16) | Delay before confirming a fall event |
 | `falldown_blind_zone` | config (grid) | 14x14 ASCII grid for fall detection exclusion zones |
-| `radar_state` | text_sensor | Radar boot state: Booting / Init sent / Re-init / Ready / Presence |
-| `sleep_state` | text_sensor | none / awake / light / deep |
-| `sleep_presence` | binary_sensor | Sleep zone occupancy |
-| `heart_rate` | sensor (bpm) | Heart rate from sleep monitoring |
-| `respiration_rate` | sensor (br/min) | Respiration rate from sleep monitoring |
-| `heart_rate_deviation` | sensor (bpm) | Heart rate deviation/variability from sleep monitoring |
+| `radar_state` | text_sensor | Booting / Init sent / Re-init / Ready / Presence / Sleep |
+| `sleep_mode_switch` | switch | Toggle sleep monitoring (mutually exclusive with presence) |
+| `sleep_state` | text_sensor | none / awake / light / deep (requires sleep mode ON) |
+| `sleep_presence` | binary_sensor | Sleep zone occupancy (requires sleep mode ON) |
+| `heart_rate` | sensor (bpm) | Heart rate (requires sleep mode ON) |
+| `respiration_rate` | sensor (br/min) | Respiration rate (requires sleep mode ON) |
+| `heart_rate_deviation` | sensor (bpm) | Heart rate deviation (requires sleep mode ON) |
 | `walking_distance` | sensor (m) | Cumulative walking distance |
 | `dwell_time_enable` | config (bool) | Enable dwell time tracking (default: false) |
-| `sleep_mount_position` | config (0-3) | Sleep-specific mounting position |
-| `sleep_zone_size` | config (uint32) | Sleep zone dimensions |
-| `sleep_bed_height` | config (uint16) | Bed/mattress height for sleep monitoring accuracy |
-| `overhead_height` | config (uint16) | Ceiling height for spatial calibration |
+| `sleep_mount_position` | config (0-3) | Sleep-specific mounting position (0=ceiling, 1=wall-side, 2=wall-head, 3=wall-foot) |
+| `sleep_zone_size` | config (uint32) | Sleep zone dimensions (`width_cm << 16 \| length_cm`) |
+| `sleep_bed_height` | config (uint16) | Bed/mattress height in cm |
+| `overhead_height` | config (uint16) | Ceiling height in cm |
 | `global_zone.presence` | binary_sensor | Overall presence (0=empty, non-zero=occupied) |
 | `global_zone.motion` | binary_sensor | Overall motion (even=active, odd=inactive) |
 | `target_tracking` | text_sensor | Base64 target data (diagnostic) |
@@ -382,11 +386,19 @@ The component sends empty defaults for any grid not configured in YAML. You only
 
 ## Known Limitations
 
-- **Fall detection** — Now implemented via SubID 0x0155 (PEOPLE_COUNTING),
-  confirmed by Ghidra analysis of the radar firmware (`FUN_00015624` sends
-  0x0155 with "Fall area: %d, %d" debug string). The radar does NOT send
-  SubID 0x0121 directly. Fall is detected when the ontime value in the
-  0x0155 payload is non-zero. The old 0x0121 handler is kept as a fallback.
+- **Sleep and presence are mutually exclusive** — The radar has two scene modes:
+  mode 3 (presence/motion detection) and mode 9 (vital signs/sleep monitoring).
+  They use different radar chirp configurations and cannot run simultaneously.
+  Use the `sleep_mode_switch` to toggle between them. The radar self-restarts
+  on each toggle (~38 seconds to resume).
+
+- **Sleep monitoring requires zone config** — Configure `sleep_bed_height`,
+  `overhead_height`, and `sleep_zone_size` in YAML for the DSP to know
+  where to measure vital signs.
+
+- **Fall detection** — Uses SubID 0x0306 from the radar's fall state machine.
+  Confirmed via Ghidra: SubID 0x0121 is angle sensor revision (not fall),
+  and the ontime field in 0x0155 is cumulative dwell time (not fall indicator).
 
 - **Sleep state** — Only values 0 (awake), 1 (light sleep), 2 (deep sleep)
   exist in the radar firmware. No REM detection.

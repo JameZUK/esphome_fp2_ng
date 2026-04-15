@@ -2,6 +2,43 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
+## 2026-04-15 — Fall Detection Fix, Sleep Mode Switch, Scene Mode RE
+
+### Critical Fixes
+
+- **Fall detection uses SubID 0x0306, not 0x0155 ontime** — The ontime field
+  in 0x0155 is cumulative dwell time (0.15 * frame_count), non-zero for ANY
+  presence. The actual fall signal is SubID 0x0306 (UINT8: 0/1) from the
+  radar's fall state machine at offset +0x587/+0x589.
+
+- **SubID 0x0121 is angle sensor revision, not fall detection** — Dispatch
+  table confirms 0x0121 → `radar_angle_sensor_rev`. Fall handler is 0x0122
+  (stock ESP32), actual signal is 0x0306 (radar).
+
+### New Features
+
+- **Sleep mode switch** — Toggle between presence detection (scene mode 3)
+  and vital signs monitoring (scene mode 9). Uses WORK_MODE (0x0116) WRITE
+  to trigger flash save + radar self-restart. Init skipped in sleep mode
+  to prevent 0x01xx WRITEs from triggering mode 3.
+
+### RE Discoveries
+
+- **Scene mode state machine** (FUN_00013d9c): Mode 3/5 entry clears
+  sleep_report_enable. Mode changes write to flash and self-restart.
+- **FUN_000257d4** (scene mode reporter): Checks sleep_report_enable on boot,
+  overrides scene_mode from 3 to 9 if set.
+- **FUN_00025dfc** (SubID-to-scene mapper): 0x01xx + opcode!=1 → mode 3.
+  Our ACKs (opcode 3) for 0x0117 were resetting to mode 3 and clearing sleep.
+- **SLEEP_REPORT_ENABLE writes to RAM only** — flash write requires
+  FUN_00013d9c (triggered by WORK_MODE SubID 0x0116).
+- **Sleep zone params (0x0168/0x0169/0x0177/0x0178) are RAM-only** in the
+  radar, lost on every reboot. Sent during normal init.
+- **Vital signs (0x0159) come from DSS** (C674x DSP), not MSS. Only
+  forwarded when radar is in scene mode 9.
+- **Complete SubID sender enumeration**: All 30 callers of FUN_00019590
+  mapped, including 0x0305 and 0x0306 in the 0x03xx range.
+
 ## 2026-04-14 — Presence Detection Fix, Fall Detection, Complete Feature Audit
 
 ### Critical Fixes
