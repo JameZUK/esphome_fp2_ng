@@ -155,6 +155,8 @@ void FP2Component::set_operating_mode(const std::string &mode) {
   else if (mode == "Sleep Monitoring") mode_index = 2;
   else if (mode == "Fall + Positioning") mode_index = 3;
   operating_mode_pref_.save(&mode_index);
+  global_preferences->sync();  // Flush to flash immediately
+  ESP_LOGI(TAG, "Saved operating mode index=%d to flash", mode_index);
 
   // Write sleep enable flag to radar RAM
   enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep);
