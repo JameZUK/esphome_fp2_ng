@@ -108,23 +108,16 @@ void FP2SleepModeSwitch::write_state(bool state) {
 }
 
 void FP2Component::set_sleep_mode_enabled(bool enabled) {
-  ESP_LOGI(TAG, "Sleep mode %s — writing to flash and resetting radar", enabled ? "ENABLED" : "DISABLED");
+  // Sleep zone params must be in radar RAM BEFORE enabling sleep.
+  // They are sent during normal init (step 1). When sleep is toggled,
+  // we write SLEEP_REPORT_ENABLE to flash and the radar's periodic
+  // FUN_000257d4 call will check the flag and override scene_mode to 9.
+  // We do NOT reset the radar — that would clear zone params from RAM
+  // and our re-init WRITEs would trigger mode 3 (clearing sleep).
+  ESP_LOGI(TAG, "Sleep mode %s", enabled ? "ENABLED" : "DISABLED");
   sleep_mode_active_ = enabled;
   enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, enabled);
-  publish_radar_state_(enabled ? "Sleep" : "Booting");
-
-  // The radar stores sleep_report_enable in flash but doesn't change the
-  // runtime scene mode until it reboots. Reset the radar so it reads the
-  // new flash value and enters scene mode 9 (sleep) or 3 (presence).
-  // Delay to allow the WRITE command to be sent and ACKed before reset.
-  set_timeout("radar_reset_for_sleep", 2000, [this]() {
-    ESP_LOGI(TAG, "Resetting radar for sleep mode change...");
-    perform_reset_();
-    // Re-init will fire on first heartbeat after reset
-    init_done_ = false;
-    radar_ready_ = false;
-    last_heartbeat_millis_ = 0;
-  });
+  publish_radar_state_(enabled ? "Sleep" : "Ready");
 }
 
 void FP2Component::trigger_edge_calibration() {
@@ -247,37 +240,13 @@ void FP2Component::check_initialization_() {
   if (last_heartbeat_millis_ == 0)
     return;
 
-  // When sleep mode is active, skip the full init (0x01xx WRITEs would
-  // trigger scene mode 3, clearing sleep_report_enable). Instead, send
-  // only sleep zone params and config sync — the radar is already in
-  // mode 9, so the scene mode handler sees 9==9 and doesn't clear sleep.
+  // When sleep mode is active after a reboot (e.g. OTA), skip init.
+  // The radar will be in mode 3 but sleep_report_enable may be in flash.
+  // The user must toggle sleep OFF then ON again to re-enable.
   if (sleep_mode_active_) {
     init_done_ = true;
     publish_radar_state_("Sleep");
-    ESP_LOGI(TAG, "Sleep mode active — sending sleep zone config only");
-
-    // Sleep zone params are RAM-only in the radar (lost on reboot).
-    // Re-send them so the DSP knows where to measure vital signs.
-    if (sleep_mount_position_ > 0) {
-      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) sleep_mount_position_);
-    }
-    if (sleep_zone_size_ > 0) {
-      std::vector<uint8_t> szs = {
-        (uint8_t)((sleep_zone_size_ >> 24) & 0xFF),
-        (uint8_t)((sleep_zone_size_ >> 16) & 0xFF),
-        (uint8_t)((sleep_zone_size_ >> 8) & 0xFF),
-        (uint8_t)(sleep_zone_size_ & 0xFF)
-      };
-      enqueue_command_blob2_(AttrId::SLEEP_ZONE_SIZE, szs);
-    }
-    if (sleep_bed_height_ > 0) {
-      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_BED_HEIGHT, sleep_bed_height_);
-    }
-    if (overhead_height_ > 0) {
-      enqueue_command_(OpCode::WRITE, AttrId::OVERHEAD_HEIGHT, overhead_height_);
-    }
-    // Stock firmware sends 0x0203 (config sync) on first heartbeat in sleep mode
-    enqueue_command_(OpCode::WRITE, (AttrId) 0x0203, (uint8_t) 0);
+    ESP_LOGI(TAG, "Sleep mode active after reboot — skipping init. Toggle sleep off/on to re-enable.");
     return;
   }
 
