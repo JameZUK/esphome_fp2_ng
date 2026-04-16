@@ -345,7 +345,12 @@ void FP2Component::check_initialization_() {
   if (sleep_mode_active_) {
     init_done_ = true;
     publish_radar_state_("Sleep");
-    ESP_LOGI(TAG, "Sleep mode — skipping all init to preserve scene mode 9");
+    ESP_LOGI(TAG, "Sleep mode — sending 0x0203 config sync (stock firmware does this)");
+    // SubID 0x0203 is in the 0x02xx range — scene mode mapper returns mode 11
+    // (not mode 3), so it does NOT clear sleep_report_enable. The stock firmware
+    // sends this on every first heartbeat when sleep is active. It may be the
+    // signal that tells the DSP to start vital signs processing.
+    enqueue_command_(OpCode::WRITE, (AttrId) 0x0203, (uint8_t) 0);
     return;
   }
 
