@@ -272,57 +272,93 @@ compatible boot loader already on radar QSPI flash.
 
 ### SBL OTA Safety Assessment
 
-**Status: PARTIALLY ASSESSED** — SBL strings analysed, Ghidra decompilation pending.
+**Status: VALIDATED** — SBL decompiled in Ghidra (`fp2_sbl.bin`, ARM:LE:32:v7).
 
-The FW1 MSS (SBL boot loader, 65KB) handles radar firmware OTA via XMODEM-1K.
-Key safety features confirmed from string analysis:
+### SBL Boot Logic (Ghidra-decompiled: FUN_000007d8)
 
-**Safety features (confirmed via strings):**
-- **Backup factory image fallback:** `"Error: Could not download the metaimage
-  to RAM. Trying to boot the backup factory default image from Flash address: %x"`
-  — if the main application fails to load, the SBL loads a backup.
-- **Image loaded to RAM first:** `"Load the input buffer to the RAM Start..."`
-  / `"...End..."` — firmware verified in RAM before execution.
-- **CRC verification:** `CRC Driver` with `"verify success!"` / `"verify failure!"`
-- **Authentication check:** `"Error: Authentication check failed!!!"` — may block
-  unsigned/modified firmware images.
-- **Boot parameter table** at flash 0x240000 with `SBL_OTA_VERIFY_OFFSET`,
-  `SBL_WORK_MODE_OFFSET`, `SBL_SLEEP_ENABLE_OFFSET`.
-- **Flash drivers** for Macronix, Winbond, Spansion QSPI chips.
+**Boot parameter table** (16 bytes at QSPI + 0x030000):
 
-**Risks (not yet verified via Ghidra decompilation):**
-- **Unknown: Does OTA overwrite the backup image?** If the OTA target area
-  overlaps with the backup, a failed write leaves no recovery path.
-- **Unknown: Partial write recovery.** If power is lost mid-flash, the main
-  image is corrupted. Does the backup survive?
-- **Authentication may block our transfers.** The `"Authentication check failed"`
-  string suggests signature verification. Only firmware images from the original
-  `mcu_ota` partition (with valid signatures) may be accepted.
-- **XMODEM-1K implementation is untested.** Code is structurally correct but
-  has never been run against the actual radar SBL.
+| Byte | Field | Description |
+|------|-------|-------------|
+| 0 | Magic | 0xAA (valid config marker) |
+| 2 | `SBL_WORK_MODE_OFFSET` | Work mode: 8=fall detection, other=zone |
+| 4 | `SBL_SLEEP_ENABLE_OFFSET` | Sleep enable: 9=sleep monitoring |
+| 5 | `SBL_OTA_VERIFY_OFFSET` | OTA pending flag: 1=new firmware waiting |
+| 15 | End marker | 0x55 |
 
-**Recovery options:**
+**Firmware selection logic** (decompiled from FUN_000007d8):
 
-| Scenario | Recovery |
-|---|---|
-| XMODEM transfer fails (timeout/CRC) | SBL stays in boot mode → GPIO13 reset → boots existing firmware |
-| Transfer OK but image fails verification | SBL falls back to backup factory image |
-| Transfer OK, verification OK, wrong firmware | GPIO13 reset → re-flash correct firmware |
-| Partial write + power loss | Unknown — depends on whether backup image is preserved |
-| SBL itself corrupted | **Bricked** — requires TI IWR6843 SOP pin ROM bootloader recovery |
+```
+1. Read boot params from QSPI + 0x030000
+2. If OTA pending (byte[5] == 1):
+     Verify OTA image at QSPI + 0x510000 (FUN_0000a6b0)
+     If verify fails → load BACKUP from QSPI + 0x040000
+     If verify passes → fall through to normal selection
+3. Normal selection (FUN_0000a038 reads byte[4], FUN_0000a0bc reads byte[2]):
+     If work_mode == 1 OR sleep_enable == 9:
+       → Load from QSPI + 0x460000  (FW3 vital signs)
+       → Backup at QSPI + 0x040000
+     Elif work_mode == 8:
+       → Load from QSPI + 0x392000  (FW2 fall detection)
+       → Backup at QSPI + 0x100000
+     Else (default):
+       → Load from QSPI + 0x2D2000  (FW1 zone detection)
+       → Backup at QSPI + 0x040000
+4. If load fails → fall back to backup address
+```
 
-**Recommended safe test sequence:**
-1. Flash FW1 back to itself (no-op test of XMODEM pipeline)
-2. If successful, flash FW3 (vital signs) for sleep monitoring
-3. Keep GPIO13 reset available for recovery
-4. Do NOT flash custom/modified firmware (authentication may reject it)
+### Radar QSPI Flash Layout (Ghidra-confirmed)
+
+| QSPI Address | Content | Source |
+|---|---|---|
+| 0x000000 | SBL boot loader | MSTR type 1 at mcu_ota:0x000000 |
+| 0x030000 | Boot parameter table (16 bytes) | FUN_00009fb4, FUN_0000a038, FUN_0000a0bc |
+| 0x040000 | Backup factory default image | FUN_000007d8 fallback path |
+| 0x100000 | Backup for fall detection mode | FUN_000007d8 mode 8 fallback |
+| 0x2D2000 | FW1 Zone Detection application | DAT_00000cc8 = 0x002D2000 |
+| 0x392000 | FW2 Fall Detection application | DAT_00000ccc = 0x00392000 |
+| 0x460000 | FW3 Sleep/Vital Signs application | Hardcoded in FUN_000007d8 |
+| 0x510000 | OTA staging / verify area | FUN_0000a6b0 verify target |
+
+**Critical: QSPI layout differs from ESP32's mcu_ota layout.** The ESP32 stores
+firmware contiguously (FW1:0x000000, FW2:0x0C0000, FW3:0x1A0000) but the radar's
+QSPI uses completely different addresses. The ESP32 must reformat during OTA.
+
+**Our 2.4MB radar flash backup is INCOMPLETE.** QSPI has data up to 0x510000+
+(>5MB). Only 0x000000-0x250000 was captured.
+
+### OTA Safety (Ghidra-confirmed)
+
+**Backup is at SEPARATE addresses from application areas:**
+- Zone/sleep backup at 0x040000 — separate from apps at 0x2D2000/0x460000 ✓
+- Fall detection backup at 0x100000 — separate from app at 0x392000 ✓
+- OTA staging at 0x510000 — separate from everything ✓
+- SBL at 0x000000 — not in any application area ✓
+
+**OTA writes to staging area (0x510000), not application partition.**
+After XMODEM transfer, SBL verifies (FUN_0000a6b0 with CRC + auth check).
+If verify fails → loads backup. Application area is NOT modified during transfer.
+
+**If OTA verify fails, backup loads.** Confirmed in decompiled FUN_000007d8:
+verify returns false → `iVar4 = 0x40000` → LAB_00000946 loads backup.
+
+**Recovery assessment (updated with Ghidra evidence):**
+
+| Scenario | Recovery | Risk Level |
+|---|---|---|
+| XMODEM transfer fails | GPIO13 reset → boots existing app | **Safe** ✓ |
+| Transfer OK, verify fails | SBL loads backup image | **Safe** ✓ |
+| Transfer OK, verify OK, wrong mode | GPIO13 reset + re-flash | **Safe** ✓ |
+| Power loss during XMODEM | Staging corrupted, app untouched | **Safe** ✓ |
+| Power loss during staging→app copy | App corrupted, backup loads | **Likely safe** |
+| SBL corruption | **Bricked** — SOP pin recovery | **Very unlikely** ✓ |
 
 **Remaining work:**
-- Load SBL into Ghidra (ARM Cortex-R4, RPRC content at mcu_ota offset 0x40)
-- Decompile the OTA write handler to confirm flash target addresses
-- Verify backup image is separate from OTA target area
-- Trace the authentication mechanism to confirm stock firmware images pass
-- Identify the radar QSPI flash partition layout
+- Trace ESP32 stock firmware OTA handler: how does it read from mcu_ota and
+  send to radar? What address mapping does it use?
+- Verify the authentication mechanism (FUN_0000a6b0) accepts stock images
+- Determine if SBL copies staging→app or updates boot params to point to staging
+- Full QSPI flash dump (need to read beyond 2.4MB)
 
 ### Completed: SubID Data Formats & Radar Firmware Validation
 

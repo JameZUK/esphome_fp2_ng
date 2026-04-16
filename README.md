@@ -460,13 +460,22 @@ This significantly reduces (but does not eliminate) the risk of bricking.
 - **FW3 has no SBL** — it requires a compatible boot loader already on the radar's QSPI flash.
 - **Authentication check exists** — the SBL may reject unsigned firmware. Only images from the stock `mcu_ota` partition are known to pass.
 
-**Safety assessment:**
-- **Backup image fallback:** Confirmed via SBL strings. Reduces brick risk.
-- **Image verified in RAM:** Firmware loaded to RAM and CRC-checked before execution.
-- **Partial write risk:** If power is lost during flash write, main image is corrupted. Backup may or may not survive — **not yet verified**.
-- **SBL corruption = bricked:** If the SBL itself is damaged, only SOP pin ROM bootloader recovery works (requires physical access to radar module).
+**Safety assessment (Ghidra-confirmed):**
+- **OTA writes to staging area (QSPI 0x510000)**, separate from application and
+  backup partitions. Application firmware is NOT modified during transfer.
+- **Backup images at separate addresses** (0x040000 for zone/sleep, 0x100000 for
+  fall). If OTA verification fails, SBL loads backup — confirmed in decompiled code.
+- **SBL boot loader at 0x000000** is not in any application area — survives OTA.
+- **Power loss during XMODEM** corrupts only the staging area — safe.
+- **SBL corruption = bricked** — very unlikely since OTA doesn't touch SBL area.
 
-**Recommended test sequence:** Flash FW1 back to itself first (no-op test), then attempt FW3 if successful. See [07-firmware-analysis.md](docs/07-firmware-analysis.md) for full details.
+**QSPI flash is larger than our backup.** Firmware images on the radar are at
+0x2D2000 (FW1), 0x392000 (FW2), 0x460000 (FW3) — different from the ESP32's
+mcu_ota layout. The ESP32 must reformat during OTA transfer.
+
+**Recommended test sequence:** Flash FW1 to itself first (no-op test), then
+attempt FW3 if successful. See [07-firmware-analysis.md](docs/07-firmware-analysis.md)
+for the full SBL decompilation and QSPI flash map.
 
 ### AI Learning
 
