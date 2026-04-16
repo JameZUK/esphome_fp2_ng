@@ -455,12 +455,31 @@ the stock ESP32 firmware's implementation. The SBL's XMODEM receive handler
 is likely in the Thumb code region of the SBL binary (not fully disassembled)
 but responds with standard XMODEM 'C'/ACK/NAK bytes.
 
+### Firmware Selection: All Three Images Sent Together
+
+`xmodem_new` (FUN_400e7440) is called with callbacks including a flash read
+function that reads from the `mcu_ota` partition (opened via
+`esp_partition_find_first(1, 0xFE, "mcu_ota")` in FUN_400e9d90).
+
+Our ESPHome `ota_detect_firmware_size_()` scans backwards from the end of the
+4MB mcu_ota partition to find the last non-0xFF byte (0x250011 = 2,424,849
+bytes), then rounds up to 1024-byte XMODEM block boundary.
+
+**The ENTIRE mcu_ota content (all three firmwares) is sent as one transfer:**
+- Transfer size: 2,425,856 bytes (2,369 blocks)
+- Estimated time: ~47 seconds at 50 blocks/second
+- Contents: FW1 MSS+DSS (768KB) + FW2 MSS+DSS (896KB) + FW3 (704KB)
+
+The SBL's RPRC parser (FUN_00004224) processes the incoming stream, extracting
+each MSTR image and writing the segments to their designated QSPI addresses
+(0x2D2000, 0x392000, 0x460000). The boot parameter table at QSPI+0x030000
+then determines which image to boot based on `SBL_WORK_MODE_OFFSET` and
+`SBL_SLEEP_ENABLE_OFFSET`.
+
 **What we still don't know:**
-- Exact QSPI address where OTA data is written (may depend on work_mode)
-- Whether the SBL erases the target area before writing
-- How the stock ESP32 selects which firmware image to send from mcu_ota
-  (the read callback at context+0x24 reads sequentially — does it read
-  from a specific offset for each mode?)
+- Whether the SBL erases the target QSPI areas before writing
+- Whether the Xtensa code at 0x400e6d90 passes a sub-range of the partition
+  (could not decompile the function that calls xmodem_new)
 
 ### Completed: SubID Data Formats & Radar Firmware Validation
 
