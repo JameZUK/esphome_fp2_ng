@@ -388,51 +388,85 @@ The component sends empty defaults for any grid not configured in YAML. You only
 
 ![Aqara App Modes](images/aqara_app_modes.jpeg)
 
-The stock Aqara app presents four operating modes. Each mode uses a **different radar firmware image** stored in the ESP32's `mcu_ota` partition (4MB). The stock app flashes the appropriate firmware to the radar when switching modes.
+The stock Aqara app presents four operating modes. Each mode uses a **different radar firmware image** stored in the ESP32's `mcu_ota` partition (4MB). The stock app flashes the appropriate firmware to the radar when switching modes via the "Install Now" button.
 
 ### Radar Firmware Images
 
-The `mcu_ota` partition contains three TI IWR6843 firmware images (confirmed via binary analysis):
+The `mcu_ota` partition contains three TI IWR6843 MSTR firmware images. All images are **CRC32 verified** and structurally validated:
 
-| Firmware | Offset | Size | Source Path | Used By |
-|----------|--------|------|-------------|---------|
-| **FW1** | 0x000000 | 768KB | `../mss/` `../dss/` | Zone Detection |
-| **FW2** | 0x0C0000 | 896KB | `E:/workspace/update12/3d_people_counting_*/` | Fall Detection, Fall + Positioning |
-| **FW3** | 0x1A0000 | 708KB | `C:/ti/mmwave_industrial_toolbox_4_11_0/Vital_Signs/` | Sleep Monitoring |
+| Firmware | Offset | MSTR Size | Format | Source Path |
+|----------|--------|-----------|--------|-------------|
+| **FW1** | 0x000000 | MSS: 65KB (type 1) + DSS: 683KB (type 3) | SBL boot loader + people counting application | `../mss/` `../dss/Peoplecount.c` |
+| **FW2** | 0x0C0000 | MSS: 65KB (type 1) + DSS: 576KB (type 3) | SBL boot loader + 3D fall detection application | `E:/workspace/update12/3d_people_counting_*/` |
+| **FW3** | 0x1A0000 | DSS: 678KB (type 3) only | Standalone vital signs application (no SBL) | `C:/ti/mmwave_industrial_toolbox_4_11_0/Vital_Signs/` |
 
-### Capabilities by Firmware
+**Note:** The MSTR type 1 sections are SBL (Secondary Boot Loader) images. FW1's SBL contains `SBL_WORK_MODE_OFFSET` and `SBL_SLEEP_ENABLE_OFFSET` for multi-firmware switching. FW2's SBL does not. FW3 has no SBL — it relies on the SBL already present on the radar's QSPI flash.
+
+All three DSS/application images share an **identical TI-RTOS/SYS-BIOS runtime** (247KB, same SHA256 hash) — confirming they were built against the same TI SDK.
+
+### Capabilities by Firmware (Confirmed via String Analysis)
 
 | Capability | FW1 | FW2 | FW3 |
 |---|---|---|---|
+| Aqara UART protocol (`communication.c`) | Yes | Yes | Yes |
 | Presence detection | Yes | Yes | Yes |
-| Zone configuration | Yes | Yes | Yes |
-| Bed height / overhead height | Yes | Yes | Yes |
-| Basic people counting | Yes | --- | --- |
-| Fall area reporting | Yes | --- | --- |
-| Deep learning fall detection | --- | **Yes** | --- |
-| ML scoring / DSP scoring | --- | **Yes** | --- |
-| Height estimation | --- | **Yes** | --- |
-| Fall recognition timing | --- | **Yes** | --- |
-| 3D people counting | --- | **Yes** | **Yes** |
-| Vital signs chain | --- | --- | **Yes** |
-| Heart rate / respiration | --- | --- | **Yes** |
+| Zone / edge / interference configuration | Yes | Yes | Yes |
+| Bed height / overhead height config | Yes | Yes | Yes |
+| Basic people counting (`Peoplecount.c`) | Yes | --- | --- |
+| Fall area reporting (`Fall area: %d`) | Yes | --- | --- |
+| Background learning | Yes | --- | --- |
+| Fall detection with shallow classifier | --- | Yes | --- |
+| DSP-based fall scoring (`score: %f`) | --- | Yes | --- |
+| Height estimation (`median_height`) | --- | Yes | --- |
+| Fall recognition timing (`fallRecognize`) | --- | Yes | --- |
+| 3D people counting | --- | Yes | Yes |
+| Vital signs chain (`Running Vital Signs Chain`) | --- | --- | Yes |
+| Heart rate / breath rate measurement | --- | --- | Yes |
+| Sleep stage tracking (`sleep tid:%d`) | --- | --- | Yes |
+| Capon3D beamforming + HWA acceleration | --- | --- | Yes |
+
+**Note on FW2's "deep learning":** The string `"Deep learning layer L3 data"` is present and there is evidence of a small custom neural network (~9 layers, `mylayer[].output_data`, `wide`, `high`, `outchannels`). However, no standard ML framework (TensorFlow Lite, etc.) is used. This appears to be a shallow custom classifier for fall/posture recognition, not modern deep learning. The ~27KB of weight-like float data exists in the gap region beyond the MSTR boundary.
 
 ### Mode to Firmware Mapping
 
 | App Mode | Firmware | Mounting | Persons | Description |
 |----------|----------|----------|---------|-------------|
 | **Zone Detection** | FW1 | Wall | Multi | Presence, motion, zones, basic people counting |
-| **Fall Detection** | FW2 | Ceiling | Single | Deep learning fall detection with ML scoring |
+| **Fall Detection** | FW2 | Ceiling | Single | Fall detection with DSP scoring and height estimation |
 | **Sleep Monitoring** | FW3 | Bedside | Single | Vital signs: heart rate, respiration, sleep state |
 | **Fall + Positioning** | FW2 | Ceiling | Single | Fall detection with real-time target streaming |
 
+**Note:** The firmware-to-mode mapping is inferred from capabilities matching the app mode descriptions. No direct mapping table was found in the stock ESP32 firmware. The selection mechanism uses `SBL_WORK_MODE_OFFSET` in the radar's boot loader.
+
 ### Current Implementation Status
 
-The `operating_mode` select currently switches the radar's **scene mode** (3, 8, or 9) within the active firmware. This works correctly for Zone Detection (FW1 is the default firmware). However:
+The `operating_mode` select currently switches the radar's **scene mode** (3, 8, or 9) within the active firmware (FW1). This works correctly for Zone Detection. However:
 
-- **Sleep Monitoring** and **Fall Detection** modes set the scene mode but do not produce their full feature set because they require **different radar firmware images** (FW3 and FW2 respectively).
-- The **radar firmware OTA** mechanism (XMODEM-1K via SubID 0x0127) is implemented but **untested**. Enabling full mode switching would require flashing the appropriate firmware image from the `mcu_ota` partition to the radar on each mode change.
-- All three firmware images share the same Aqara UART protocol (`communication.c`), so the ESPHome component's SubID handlers work with any of them.
+- **Sleep Monitoring** and **advanced Fall Detection** require **different radar firmware images** (FW3 and FW2 respectively). The scene mode switch alone is insufficient — the vital signs DSP code does not exist in FW1, and FW2's fall detection algorithm is fundamentally different from FW1's.
+- The **radar firmware OTA** mechanism (XMODEM-1K via SubID 0x0127) is implemented but **untested**.
+- All three firmware images share the same Aqara UART protocol, so the ESPHome component's SubID handlers work with any of them.
+
+### OTA Safety Notes
+
+> **WARNING: Radar firmware OTA is untested. Incorrect use could brick the radar.**
+
+The SBL (Secondary Boot Loader) has a **backup factory image fallback** — if the
+main application fails to load after OTA, the SBL attempts to boot a backup image.
+This significantly reduces (but does not eliminate) the risk of bricking.
+
+**Requirements for OTA:**
+- **Must use raw MSTR images from the `mcu_ota` partition**, NOT the extracted `.bin` files. The extracted files have stripped MSTR headers and include gap padding.
+- **CRC32 trailer (4 bytes after MSTR data) must be included** for the radar to verify integrity. All five CRC32 checksums have been validated.
+- **FW3 has no SBL** — it requires a compatible boot loader already on the radar's QSPI flash.
+- **Authentication check exists** — the SBL may reject unsigned firmware. Only images from the stock `mcu_ota` partition are known to pass.
+
+**Safety assessment:**
+- **Backup image fallback:** Confirmed via SBL strings. Reduces brick risk.
+- **Image verified in RAM:** Firmware loaded to RAM and CRC-checked before execution.
+- **Partial write risk:** If power is lost during flash write, main image is corrupted. Backup may or may not survive — **not yet verified**.
+- **SBL corruption = bricked:** If the SBL itself is damaged, only SOP pin ROM bootloader recovery works (requires physical access to radar module).
+
+**Recommended test sequence:** Flash FW1 back to itself first (no-op test), then attempt FW3 if successful. See [07-firmware-analysis.md](docs/07-firmware-analysis.md) for full details.
 
 ### AI Learning
 
@@ -442,19 +476,24 @@ The stock app's "AI Learning" feature triggers both edge and interference auto-c
 
 - **Sleep monitoring requires radar firmware swap** — The vital signs processing
   (heart rate, respiration) runs on FW3, a completely separate radar firmware
-  from the default FW1. The operating mode select sets scene mode 9 but does not
-  yet flash FW3 to the radar. Radar OTA is implemented but untested.
+  from the default FW1. The vital signs DSP code does not exist in FW1 — scene
+  mode 9 alone is insufficient. Radar OTA (XMODEM-1K) is implemented but untested.
 
-- **Advanced fall detection requires radar firmware swap** — FW2 has deep learning
-  fall detection with ML scoring, distinct from FW1's basic fall algorithm.
-  The basic fall detection (SubID 0x0306) in FW1 requires ceiling mounting.
+- **Advanced fall detection requires radar firmware swap** — FW2 has a DSP-based
+  fall detection algorithm with scoring and height estimation, distinct from FW1's
+  basic fall algorithm. FW1's fall detection (SubID 0x0306) may only work from
+  ceiling mounting.
 
 - **Sleep state** — Only values 0 (awake), 1 (light sleep), 2 (deep sleep)
-  exist in the radar firmware. No REM detection.
+  exist in the vital signs firmware. No REM detection.
 
 - **Presence delay after OTA** — The radar may take 2-5 minutes after an OTA
   flash before it starts producing presence reports. Target tracking works
   immediately. Use the `radar_state` sensor to monitor boot progress.
+
+- **Extracted binary naming** — `fp2_radar_mss.bin` is misnamed; it is actually
+  FW1's DSS (application) content, not the MSS boot loader. The Ghidra analysis
+  was performed on the correct data despite the naming.
 
 ## Factory Calibration
 

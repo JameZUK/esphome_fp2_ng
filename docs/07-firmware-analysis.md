@@ -246,10 +246,88 @@ Key findings:
 - **Not needed** for static zones (our zones are YAML-defined at compile time)
 - Full documentation in [02-uart-protocol.md](02-uart-protocol.md)
 
+### Completed: Three Radar Firmware Images Identified
+
+**Status: VALIDATED** — three MSTR firmware images in `mcu_ota` partition,
+all CRC32-verified, structurally validated via Ghidra.
+
+| Image | Offset | Valid Size | CRC32 | Content |
+|-------|--------|-----------|-------|---------|
+| FW1 MSS | 0x000000 | 65KB | 0x5F97B23D ✓ | SBL boot loader (has `SBL_WORK_MODE_OFFSET`) |
+| FW1 DSS | 0x012000 | 683KB | 0xD8B3A3AA ✓ | Zone detection, people counting |
+| FW2 MSS | 0x0C0000 | 65KB | 0x8EDF2D7A ✓ | SBL boot loader (no work mode offset) |
+| FW2 DSS | 0x0D2000 | 576KB | 0xD83C969D ✓ | Fall detection with DSP scoring |
+| FW3 | 0x1A0000 | 678KB | 0xA579DCB8 ✓ | Vital signs (standalone, no SBL) |
+
+**Naming correction:** `fp2_radar_mss.bin` in `/ghidra-binaries/` is actually FW1's
+DSS content (offset 0x0120B0 in mcu_ota), not the MSS boot loader. All Ghidra
+analysis was on the correct binary. `fp2_radar_dsp.bin` is FW2's DSS content.
+
+**Shared runtime:** All three DSS images contain an identical TI-RTOS segment
+(247,416 bytes, same SHA256) — built from the same TI SDK.
+
+**OTA requirements:** Must use raw MSTR images from mcu_ota (NOT extracted .bin
+files). CRC32 trailer (4 bytes) must be included. FW3 has no SBL — requires
+compatible boot loader already on radar QSPI flash.
+
+### SBL OTA Safety Assessment
+
+**Status: PARTIALLY ASSESSED** — SBL strings analysed, Ghidra decompilation pending.
+
+The FW1 MSS (SBL boot loader, 65KB) handles radar firmware OTA via XMODEM-1K.
+Key safety features confirmed from string analysis:
+
+**Safety features (confirmed via strings):**
+- **Backup factory image fallback:** `"Error: Could not download the metaimage
+  to RAM. Trying to boot the backup factory default image from Flash address: %x"`
+  — if the main application fails to load, the SBL loads a backup.
+- **Image loaded to RAM first:** `"Load the input buffer to the RAM Start..."`
+  / `"...End..."` — firmware verified in RAM before execution.
+- **CRC verification:** `CRC Driver` with `"verify success!"` / `"verify failure!"`
+- **Authentication check:** `"Error: Authentication check failed!!!"` — may block
+  unsigned/modified firmware images.
+- **Boot parameter table** at flash 0x240000 with `SBL_OTA_VERIFY_OFFSET`,
+  `SBL_WORK_MODE_OFFSET`, `SBL_SLEEP_ENABLE_OFFSET`.
+- **Flash drivers** for Macronix, Winbond, Spansion QSPI chips.
+
+**Risks (not yet verified via Ghidra decompilation):**
+- **Unknown: Does OTA overwrite the backup image?** If the OTA target area
+  overlaps with the backup, a failed write leaves no recovery path.
+- **Unknown: Partial write recovery.** If power is lost mid-flash, the main
+  image is corrupted. Does the backup survive?
+- **Authentication may block our transfers.** The `"Authentication check failed"`
+  string suggests signature verification. Only firmware images from the original
+  `mcu_ota` partition (with valid signatures) may be accepted.
+- **XMODEM-1K implementation is untested.** Code is structurally correct but
+  has never been run against the actual radar SBL.
+
+**Recovery options:**
+
+| Scenario | Recovery |
+|---|---|
+| XMODEM transfer fails (timeout/CRC) | SBL stays in boot mode → GPIO13 reset → boots existing firmware |
+| Transfer OK but image fails verification | SBL falls back to backup factory image |
+| Transfer OK, verification OK, wrong firmware | GPIO13 reset → re-flash correct firmware |
+| Partial write + power loss | Unknown — depends on whether backup image is preserved |
+| SBL itself corrupted | **Bricked** — requires TI IWR6843 SOP pin ROM bootloader recovery |
+
+**Recommended safe test sequence:**
+1. Flash FW1 back to itself (no-op test of XMODEM pipeline)
+2. If successful, flash FW3 (vital signs) for sleep monitoring
+3. Keep GPIO13 reset available for recovery
+4. Do NOT flash custom/modified firmware (authentication may reject it)
+
+**Remaining work:**
+- Load SBL into Ghidra (ARM Cortex-R4, RPRC content at mcu_ota offset 0x40)
+- Decompile the OTA write handler to confirm flash target addresses
+- Verify backup image is separate from OTA target area
+- Trace the authentication mechanism to confirm stock firmware images pass
+- Identify the radar QSPI flash partition layout
+
 ### Completed: SubID Data Formats & Radar Firmware Validation
 
 **Status: SOLVED** — all priority formats decoded. Validated against
-decompiled TI IWR6843 radar firmware (`fp2_radar_mss.bin`, ARM:LE:32:v7).
+decompiled TI IWR6843 radar firmware (`fp2_radar_mss.bin` = FW1 DSS, ARM:LE:32:v7).
 
 | SubID | Name | Radar FW Function | Decoded Format | Validated? |
 |-------|------|-------------------|---------------|------------|
@@ -267,21 +345,40 @@ decompiled TI IWR6843 radar firmware (`fp2_radar_mss.bin`, ARM:LE:32:v7).
 | 0x0176 | SLEEP_EVENT | `FUN_0002cf68` (vs) | UINT8 (1=light, 2=deep transition) | **YES** |
 
 Key findings from validation:
-- **0x0121 FALL_DETECTION not sent by radar** — fall data goes through 0x0155
-  (PEOPLE_COUNTING). Stock ESP32 firmware likely extracts fall events from
-  0x0155 data. Our component needs to implement 0x0155 parsing for fall events.
+- **0x0121 is ANGLE_SENSOR_REV, not fall detection** — dispatch table confirmed.
+  0x0122 is the stock fall handler. Actual fall signal is **SubID 0x0306** (UINT8: 0/1).
+- **0x0155 PEOPLE_COUNTING is dwell time, not fall** — 7-byte BLOB2:
+  `[ZoneID:1][Count:2 BE][DwellTime:4 BE]`. DwellTime = 0.15 × frame_count.
 - **SLEEP_STATE has no REM** — only values 0, 1, 2 produced by radar state machine
+- **Sleep sensors (0x0159, 0x0161, 0x0167) only produced by FW3** — the vital signs
+  DSP code does not exist in FW1. Scene mode 9 alone is insufficient.
 - **0x0142 and 0x0115 sent together** from same function on zone transitions
 - **Presence values strictly 0/1** — never other non-zero values
 
-### Priority 2: Remaining Unknown SubID Data Formats
+### Completed: Scene Mode and Operating Mode Analysis
 
-| SubID | Name | What to find |
-|-------|------|-------------|
-| 0x0155 | PEOPLE_COUNTING | Complex blob — contains fall detection data. **Priority for fall events.** |
-| 0x0164 | REALTIME_PEOPLE | Difference from ONTIME (0x0165) — seen in logs |
-| 0x0166 | REALTIME_COUNT | Also seen in logs as unhandled |
-| 0x0174 | WALK_DISTANCE_ALL | Distance data format and units |
+**Status: VALIDATED** — complete scene mode state machine traced via Ghidra.
+
+- **FUN_00013d9c**: Scene mode write handler. Writes to flash + restarts.
+  Modes 3/5 clear `sleep_report_enable`. Mode 9 does not.
+- **FUN_000257d4**: Boot-time override. If `sleep_report_enable=1`, forces mode 9.
+- **FUN_00025dfc**: SubID-to-scene mapper. 0x01xx + opcode!=1 → mode 3 (clears sleep).
+- **Sleep and presence are mutually exclusive** — different chirp configs, different DSP.
+- **Full mode switching requires radar firmware OTA** — not just scene mode changes.
+  FW1 for zone detection, FW2 for fall detection, FW3 for vital signs.
+
+### Completed: 0x0155 PEOPLE_COUNTING and Fall Detection Path
+
+**Status: SOLVED** — fall detection uses SubID 0x0306, NOT 0x0155.
+
+- **0x0155** is people counting + dwell time. `ontime_value = 0.15 × frame_count`.
+  Non-zero whenever anyone is present. NOT a fall indicator.
+- **0x0306** is the actual fall detection result (UINT8: 0=no fall, 1=fall).
+  Sent from radar FUN_000244f8, offset +0x589 in config struct.
+- **Fall detection algorithm** uses state machine at offset +0x587. Checks targets
+  within defined boundary region for 25 frames.
+- **FW2 has enhanced fall detection** with DSP scoring, height estimation,
+  and a small custom neural network. FW1's fall detection is basic.
 
 ### Completed: NVS Lux Calibration
 

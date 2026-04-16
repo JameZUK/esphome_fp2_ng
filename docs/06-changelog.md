@@ -2,23 +2,35 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
-## 2026-04-16 — Three Radar Firmware Images Discovered
+## 2026-04-16 — Three Radar Firmware Images Validated, SBL Safety Assessment
 
-### RE Discoveries
+### RE Discoveries (Ghidra-validated)
 
-- **Three distinct radar firmware images** found in the `mcu_ota` partition (4MB):
-  - FW1 (768KB): Zone Detection — basic people counting, fall area reporting
-  - FW2 (896KB): Fall Detection — deep learning, ML scoring, height estimation
-  - FW3 (708KB): Sleep Monitoring — vital signs chain, heart rate, respiration
-- **Each app mode requires a different firmware image** — not just scene mode config
-- **FW2 has deep learning fall detection** from `E:/workspace/update12/3d_people_counting_*/`
-  with ML scoring, DSP fall recognition, and height estimation. This is the advanced
-  fall detection used in ceiling-mount mode.
-- **FW3 is the TI Vital Signs demo** from `C:/ti/mmwave_industrial_toolbox_4_11_0/`
-  with its own MSS+DSS code for vital signs processing.
-- **Sleep monitoring requires FW3 to be flashed to the radar** — scene mode 9 alone
-  is insufficient. The vital signs DSP code doesn't exist in FW1.
-- **All three firmwares share the same Aqara UART protocol** (`communication.c`)
+- **Three distinct MSTR firmware images** in the `mcu_ota` partition (4MB),
+  all CRC32-verified and structurally validated:
+  - FW1 (MSS 65KB + DSS 683KB): Zone Detection — `Peoplecount.c`, fall area
+  - FW2 (MSS 65KB + DSS 576KB): Fall Detection — DSP scoring, height estimation
+  - FW3 (DSS 678KB, no SBL): Sleep/Vital Signs — heart rate, respiration, sleep stages
+- **`fp2_radar_mss.bin` is misnamed** — it is FW1's DSS content, not the MSS boot loader.
+  All Ghidra analysis was performed on the correct data despite the naming.
+- **FW2's "deep learning"** is a small custom neural network (~9 layers, no ML framework).
+  Contains `mylayer[].output_data`, `wide`, `high`, `outchannels` — likely a shallow
+  fall/posture classifier. Not modern deep learning.
+- **FW3 is standalone but has no SBL** — relies on the boot loader already on the radar.
+  Built from TI mmWave Industrial Toolbox 4.11.0 Vital Signs demo.
+- **All three share identical TI-RTOS runtime** (247KB, same SHA256) — same SDK build.
+- **All three share Aqara UART protocol** (`communication.c`) — SubID handlers compatible.
+- **String attribution verified**: "Deep learning" only in FW2, "Vital Signs" only in FW3,
+  "Peoplecount" only in FW1. Cross-checked across all sections.
+- **FW1's SBL has `SBL_WORK_MODE_OFFSET`** for multi-firmware switching. FW2's does not.
+- **No direct mode-to-offset mapping table** found in stock ESP32 firmware.
+  Mode selection uses SBL flash parameters.
+- **OTA must use raw MSTR images** from mcu_ota, not extracted .bin files. CRC32 trailer
+  (4 bytes) must be included. Extracted files have stripped headers and gap padding.
+- **SBL safety assessment**: backup factory image fallback confirmed via string
+  analysis. Image loaded to RAM and CRC-verified before execution. Authentication
+  check exists (may block unsigned firmware). Partial write recovery and backup
+  image isolation not yet verified — requires Ghidra decompilation of SBL.
 
 ## 2026-04-15 — Operating Mode Select, Fall Detection Fix, Scene Mode RE
 
