@@ -158,6 +158,32 @@ void FP2Component::set_operating_mode(const std::string &mode) {
   global_preferences->sync();  // Flush to flash immediately
   ESP_LOGI(TAG, "Saved operating mode index=%d to flash", mode_index);
 
+  // For sleep mode: send zone params BEFORE enabling sleep.
+  // While still in mode 3, 0x01xx WRITEs are safe (mode 3→3 = no transition).
+  // The params are stored in radar RAM and applied before the restart.
+  // After restart they're lost (RAM-only), but were already processed.
+  // This matches the stock Aqara firmware sequence.
+  if (sleep) {
+    if (sleep_mount_position_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) sleep_mount_position_);
+    }
+    if (sleep_zone_size_ > 0) {
+      std::vector<uint8_t> szs = {
+        (uint8_t)((sleep_zone_size_ >> 24) & 0xFF),
+        (uint8_t)((sleep_zone_size_ >> 16) & 0xFF),
+        (uint8_t)((sleep_zone_size_ >> 8) & 0xFF),
+        (uint8_t)(sleep_zone_size_ & 0xFF)
+      };
+      enqueue_command_blob2_(AttrId::SLEEP_ZONE_SIZE, szs);
+    }
+    if (sleep_bed_height_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_BED_HEIGHT, sleep_bed_height_);
+    }
+    if (overhead_height_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::OVERHEAD_HEIGHT, overhead_height_);
+    }
+  }
+
   // Write sleep enable flag to radar RAM
   enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep);
   // WORK_MODE write triggers flash save + radar self-restart
