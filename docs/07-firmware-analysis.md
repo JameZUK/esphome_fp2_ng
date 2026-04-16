@@ -353,12 +353,62 @@ verify returns false → `iVar4 = 0x40000` → LAB_00000946 loads backup.
 | Power loss during staging→app copy | App corrupted, backup loads | **Likely safe** |
 | SBL corruption | **Bricked** — SOP pin recovery | **Very unlikely** ✓ |
 
-**Remaining work:**
-- Trace ESP32 stock firmware OTA handler: how does it read from mcu_ota and
-  send to radar? What address mapping does it use?
-- Verify the authentication mechanism (FUN_0000a6b0) accepts stock images
-- Determine if SBL copies staging→app or updates boot params to point to staging
-- Full QSPI flash dump (need to read beyond 2.4MB)
+### Complete OTA Flow (Ghidra-confirmed across both firmwares)
+
+```
+1. ESP32 sends SubID 0x0127 (OTA_SET_FLAG=true) to radar app
+   → Stock ESP32: ota_set_flag_send at 0x400e6e8c
+   → ESPHome: enqueue_command_(WRITE, OTA_SET_FLAG, true)
+
+2. Radar app writes OTA_VERIFY=1 to boot params (QSPI+0x030000 byte[5])
+   → Performs soft restart (0xAD to 0xFFFFE11C)
+
+3. SBL boots, reads boot params:
+   → FUN_00009fb4 reads byte[5] (OTA_VERIFY) → returns 1
+   → SBL enters XMODEM receive mode (FUN_00004224 + FrameStartISR)
+
+4. ESP32 sends firmware via XMODEM-1K:
+   → Stock ESP32: xmodem_build_packet at 0x400e702c, reads from mcu_ota partition
+   → ESPHome: ota_send_current_block_() reads from MCU_OTA_FLASH_OFFSET
+   → 1024-byte blocks, CRC-16/CCITT, STX framing
+
+5. SBL receives and processes:
+   → FUN_00004224 state machine: Meta header → RPRC parse → Authentication
+   → FUN_00006ae4/FUN_00006c0c process RPRC segments
+   → Data written to QSPI flash at target application address
+   → "Error: Authentication check failed!!!" if auth fails (state 3)
+   → "Error: RPRC Parsing Failure!!!" if format invalid
+
+6. After transfer complete:
+   → FUN_0000a6b0 verifies at QSPI+0x510000 (verification record)
+   → If verify OK: clears OTA flag, boots normally
+   → If verify fails: loads backup from QSPI+0x040000
+
+7. SBL selects application based on boot params:
+   → WORK_MODE + SLEEP_ENABLE → address 0x2D2000/0x392000/0x460000
+```
+
+**Key finding: OTA writes to the APPLICATION address, not staging.**
+The 0x510000 area contains a verification record (hash/CRC), not the full
+image. The backup at 0x040000 is at a separate address and is NOT overwritten.
+
+**Stock ESP32 XMODEM functions** (from earlier RE, confirmed present):
+
+| Function | Address | Purpose |
+|---|---|---|
+| `radar_ota_start` | 0x400e6f60 | Init OTA, open mcu_ota partition |
+| `ota_set_flag_send` | 0x400e6e8c | Send WRITE 0x0127 BOOL=true |
+| `xmodem_new` | 0x400e7440 | Allocate XMODEM context |
+| `xmodem_build_packet` | 0x400e702c | Build 1029-byte XMODEM-1K packet |
+| `xmodem_recv` | 0x400e7218 | 3-state receive machine |
+| `xmodem_send_eot` | 0x400e7084 | Send EOT with retry |
+| `xmodem_crc16` | 0x400e6fe4 | CRC-16/CCITT |
+
+**What we still don't know:**
+- Exact address where OTA data is written (may depend on current work_mode)
+- Whether the SBL erases the target area before writing (likely yes)
+- The exact authentication mechanism in FUN_00006c0c
+- Whether stock mcu_ota images pass authentication as-is or need address patching
 
 ### Completed: SubID Data Formats & Radar Firmware Validation
 
