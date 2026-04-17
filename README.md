@@ -32,7 +32,7 @@ Replaces the stock ESP32 firmware on the Aqara FP2 with ESPHome, while keeping t
 - **Zone presence and motion** — per-zone binary sensors with presence inference
 - **Factory-calibrated light sensor** — OPT3001 with per-unit NVS calibration
 - **Accelerometer corrections** — factory calibration from NVS
-- **Radar firmware OTA** — XMODEM-1K (endpoint verified, requires 16MB partition layout)
+- **Radar firmware OTA** — XMODEM-1K, verified (swap between FW1 / FW2 / FW3 wirelessly)
 - **Auto-calibration** — room boundary and interference detection buttons
 
 All data stays local. No Aqara cloud dependency.
@@ -65,7 +65,7 @@ See [docs/06-changelog.md](docs/06-changelog.md) for the original changelog.
 - OPT3001 ambient light with factory NVS calibration
 - Accelerometer factory NVS corrections
 - Configurable target tracking publish rate (default 500ms)
-- Radar firmware OTA via XMODEM-1K (requires 16 MB partition layout; endpoint verified via handshake probe)
+- Radar firmware OTA via XMODEM-1K (endpoint verified via handshake probe; requires the canonical 16 MB flash layout — see [FLASHING.md](FLASHING.md))
 - Data-bearing RESPONSE frame routing (fixes missing zone reports)
 - Improved Lovelace card: throttled updates, posture-aware targets, auto-tracking
 

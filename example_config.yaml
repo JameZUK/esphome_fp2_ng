@@ -3,6 +3,9 @@ esphome:
 
 esp32:
   board: esp32-solo1
+  flash_size: 16MB
+  # Place partitions_fp2.csv (from components/aqara_fp2/) into /config/esphome/
+  partitions: partitions_fp2.csv
   framework:
     type: esp-idf
 
