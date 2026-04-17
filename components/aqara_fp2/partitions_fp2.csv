@@ -1,0 +1,31 @@
+# Aqara FP2 custom partition table — 16 MB layout
+#
+# Copy this file to /config/esphome/partitions_fp2.csv on your Home Assistant
+# instance, then reference it in your YAML:
+#
+#   esp32:
+#     board: esp32-solo1
+#     flash_size: 16MB
+#     partitions: partitions_fp2.csv
+#
+# IMPORTANT: Changing the partition table REQUIRES a one-time initial flash
+# via USB/serial with esptool.py write_flash 0x0 firmware.factory.bin
+# (ESPHome OTA alone cannot update the partition table at 0x8000).
+# After the initial serial flash, all subsequent updates work OTA normally.
+#
+# Layout notes:
+#   - otadata/phy_init/app0/app1/nvs kept at the standard ESP-IDF auto-layout
+#     offsets for 4 MB builds, just with 16 MB flash_size declared so the
+#     bootloader's bounds check passes.
+#   - mcu_ota at 0x433000 matches stock Aqara exactly, so existing radar
+#     firmware dumps stage in the right place.
+#   - Remaining ~7.8 MB free after mcu_ota (0x833000 - 0x1000000) is
+#     available for future use (fctry NVS, spiffs, etc.)
+#
+# Name,     Type, SubType, Offset,   Size,     Flags
+otadata,    data, ota,     0x9000,   0x2000,
+phy_init,   data, phy,     0xB000,   0x1000,
+app0,       app,  ota_0,   0x10000,  0x1C0000,
+app1,       app,  ota_1,   0x1D0000, 0x1C0000,
+nvs,        data, nvs,     0x390000, 0x6D000,
+mcu_ota,    data, 0xFE,    0x433000, 0x400000,
