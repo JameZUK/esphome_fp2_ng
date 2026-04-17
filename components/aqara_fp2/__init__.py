@@ -3,7 +3,7 @@ import json
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import pins
-from esphome.components import binary_sensor, button, select, sensor, switch, uart
+from esphome.components import binary_sensor, button, esp32, select, sensor, switch, uart
 from esphome.components import text_sensor as text_sensor_
 from esphome.const import (
     CONF_DEVICE_CLASS,
@@ -45,6 +45,7 @@ FP2ClearInterferenceButton = aqara_fp2_ns.class_("FP2ClearInterferenceButton", b
 FP2DeleteFalseTargetsButton = aqara_fp2_ns.class_("FP2DeleteFalseTargetsButton", button.Button)
 FP2RadarOtaButton = aqara_fp2_ns.class_("FP2RadarOtaButton", button.Button)
 FP2RadarFwStageButton = aqara_fp2_ns.class_("FP2RadarFwStageButton", button.Button)
+FP2RadarOtaProbeButton = aqara_fp2_ns.class_("FP2RadarOtaProbeButton", button.Button)
 FP2Zone = aqara_fp2_ns.class_("FP2Zone", cg.Component)
 
 CONF_FP2_ID = "fp2_id"
@@ -85,6 +86,7 @@ CONF_CLEAR_EDGE = "clear_edge"
 CONF_CLEAR_INTERFERENCE = "clear_interference"
 CONF_RADAR_OTA = "radar_ota"
 CONF_RADAR_FW_STAGE = "radar_fw_stage"
+CONF_RADAR_OTA_PROBE = "radar_ota_probe"
 CONF_FALL_DETECTION = "fall_detection"
 CONF_FALL_OVERTIME = "fall_overtime"
 CONF_FALL_OVERTIME_PERIOD = "fall_overtime_period"
@@ -290,6 +292,11 @@ CONFIG_SCHEMA = (
                 icon="mdi:download",
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(CONF_RADAR_OTA_PROBE): button.button_schema(
+                FP2RadarOtaProbeButton,
+                icon="mdi:radar",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
 
             cv.Optional("edge_label_grid_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
             cv.Optional("entry_exit_grid_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
@@ -381,6 +388,7 @@ SENSOR_MAP = {
     CONF_FALL_OVERTIME: (binary_sensor.new_binary_sensor, "set_fall_overtime_sensor"),
     CONF_RADAR_OTA: (button.new_button, "set_radar_ota_button"),
     CONF_RADAR_FW_STAGE: (button.new_button, "set_radar_fw_stage_button"),
+    CONF_RADAR_OTA_PROBE: (button.new_button, "set_radar_ota_probe_button"),
     CONF_TARGET_TRACKING: (text_sensor_.new_text_sensor, "set_target_tracking_sensor"),
 
     # Text config sensors
@@ -429,7 +437,10 @@ async def to_code(config):
     if CONF_RADAR_FIRMWARE_URL in config:
         cg.add(var.set_radar_firmware_url(config[CONF_RADAR_FIRMWARE_URL]))
         cg.add_define("USE_RADAR_FW_HTTP")
-        cg.add_library("esp_http_client", None)
+        # esp_http_client is a core ESP-IDF component — register via ESPHome's helper
+        esp32.include_builtin_idf_component("esp_http_client")
+        # HTTPS via GitHub raw — needs mbedTLS certificate bundle
+        esp32.add_idf_sdkconfig_option("CONFIG_MBEDTLS_CERTIFICATE_BUNDLE", True)
 
     if CONF_RADAR_RESET_PIN in config:
         reset_pin = await cg.gpio_pin_expression(config[CONF_RADAR_RESET_PIN])

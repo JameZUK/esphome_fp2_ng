@@ -19,6 +19,8 @@
 #include <deque>
 #include <vector>
 
+#include <esp_partition.h>
+
 namespace esphome {
 namespace aqara_fp2 {
 
@@ -293,6 +295,15 @@ protected:
   FP2Component *parent_{nullptr};
 };
 
+class FP2RadarOtaProbeButton : public button::Button {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void press_action() override;
+  FP2Component *parent_{nullptr};
+};
+
 class FP2Component : public Component, public uart::UARTDevice {
 public:
   void setup() override;
@@ -386,6 +397,10 @@ public:
     radar_ota_button_ = btn;
     btn->set_parent(this);
   }
+  void set_radar_ota_probe_button(FP2RadarOtaProbeButton *btn) {
+    radar_ota_probe_button_ = btn;
+    btn->set_parent(this);
+  }
 
   void trigger_edge_calibration();
   void trigger_interference_calibration();
@@ -394,6 +409,7 @@ public:
   void clear_interference_calibration();
   void trigger_radar_ota();
   void trigger_radar_fw_stage();
+  void trigger_radar_ota_probe();
   void set_radar_firmware_url(const std::string &url) { radar_firmware_url_ = url; }
   void set_radar_fw_stage_button(FP2RadarFwStageButton *btn) {
     radar_fw_stage_button_ = btn;
@@ -565,6 +581,7 @@ protected:
   FP2DeleteFalseTargetsButton *delete_false_targets_button_{nullptr};
   FP2RadarOtaButton *radar_ota_button_{nullptr};
   FP2RadarFwStageButton *radar_fw_stage_button_{nullptr};
+  FP2RadarOtaProbeButton *radar_ota_probe_button_{nullptr};
   bool location_reporting_active_{false};
   uint32_t target_tracking_interval_ms_{500};
   uint32_t last_target_publish_millis_{0};
@@ -650,9 +667,15 @@ protected:
   uint8_t ota_retry_count_{0};
   uint8_t ota_can_count_{0};
   uint8_t ota_packet_buf_[1029];     // STX + blk + ~blk + 1024 data + CRC16
+  bool ota_probe_only_{false};       // Safe test: trigger handshake, send CAN on 'C', abort without writing
+  uint8_t ota_probe_c_count_{0};     // Sustained 'C' counter — require ≥2 to confirm XMODEM handshake
+  uint32_t ota_probe_last_c_millis_{0};
+  uint32_t ota_probe_sof_count_{0};  // Count of 0x55 SOF bytes seen — indicates radar still in normal protocol mode
 
-  static const uint32_t MCU_OTA_FLASH_OFFSET = 0x433000;
-  static const uint32_t MCU_OTA_FLASH_SIZE = 4 * 1024 * 1024;
+  // mcu_ota partition looked up at runtime by name (see setup()).
+  // Avoids hardcoding an offset — works with any partition layout.
+  const esp_partition_t *mcu_ota_partition_{nullptr};
+
   static const uint32_t XMODEM_BLOCK_SIZE = 1024;
   static const uint32_t OTA_HANDSHAKE_TIMEOUT_MS = 20000;
   static const uint32_t OTA_TRANSFER_TIMEOUT_MS = 3000;

@@ -143,6 +143,9 @@ aqara_fp2:
   radar_temperature:
     name: "Radar Temperature"
 
+  radar_ota_probe:
+    name: "Radar OTA Probe (safe test)"
+
 binary_sensor:
   # Button on the bottom of the device
   - platform: gpio

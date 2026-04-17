@@ -1,6 +1,7 @@
 #include "fp2_component.h"
 #include "esphome/components/api/api_server.h"
 #include "esphome/components/switch/switch.h"
+#include "esphome/core/application.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
@@ -8,8 +9,10 @@
 #include <cstdint>
 #include <vector>
 #include <esp_flash.h>
+#include <esp_partition.h>
 #ifdef USE_RADAR_FW_HTTP
 #include <esp_http_client.h>
+#include <esp_crt_bundle.h>
 #endif
 
 namespace esphome {
@@ -57,6 +60,22 @@ void FP2Component::setup() {
   if (operating_mode_pref_.load(&saved_mode) && saved_mode < 4) {
     sleep_mode_active_ = (saved_mode == 2);  // Sleep Monitoring
     ESP_LOGI(TAG, "Restored operating mode index=%d (sleep=%d)", saved_mode, sleep_mode_active_);
+  }
+
+  // Look up the radar firmware staging partition by name. Pointer may be
+  // null if the partition table doesn't include mcu_ota (e.g. running on a
+  // stock ESPHome partition layout that hasn't been re-flashed for this
+  // component). All OTA entry points must check the pointer and fail
+  // gracefully if null.
+  mcu_ota_partition_ =
+      esp_partition_find_first(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, "mcu_ota");
+  if (mcu_ota_partition_ != nullptr) {
+    ESP_LOGI(TAG, "mcu_ota partition: offset=0x%06x size=%u bytes",
+             (unsigned) mcu_ota_partition_->address,
+             (unsigned) mcu_ota_partition_->size);
+  } else {
+    ESP_LOGW(TAG, "mcu_ota partition not found — radar OTA staging/flash will be disabled");
+    ESP_LOGW(TAG, "Custom partition table required. Serial-flash a build with flash_size: 16MB.");
   }
 
   // GPIO Reset
@@ -1717,6 +1736,12 @@ void FP2RadarFwStageButton::press_action() {
   }
 }
 
+void FP2RadarOtaProbeButton::press_action() {
+  if (this->parent_ != nullptr) {
+    this->parent_->trigger_radar_ota_probe();
+  }
+}
+
 void FP2Component::trigger_radar_fw_stage() {
 #ifdef USE_RADAR_FW_HTTP
   if (radar_firmware_url_.empty()) {
@@ -1756,11 +1781,16 @@ uint16_t FP2Component::xmodem_crc16_(const uint8_t *data, size_t len) {
 }
 
 uint32_t FP2Component::ota_detect_firmware_size_() {
+  if (mcu_ota_partition_ == nullptr) {
+    ESP_LOGE(TAG, "OTA: mcu_ota partition not available (custom partition table required)");
+    return 0;
+  }
+
   // Validate the firmware starts with TI MSTR magic header
   uint8_t magic[4];
-  esp_err_t err = esp_flash_read(NULL, magic, MCU_OTA_FLASH_OFFSET, 4);
+  esp_err_t err = esp_partition_read(mcu_ota_partition_, 0, magic, 4);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "OTA: cannot read flash at 0x%06x (err=0x%x)", MCU_OTA_FLASH_OFFSET, err);
+    ESP_LOGE(TAG, "OTA: cannot read mcu_ota partition (err=0x%x)", err);
     return 0;
   }
 
@@ -1773,14 +1803,14 @@ uint32_t FP2Component::ota_detect_firmware_size_() {
 
   // Scan backwards from end of partition to find last non-0xFF byte
   uint8_t buf[256];
-  uint32_t offset = MCU_OTA_FLASH_SIZE;
+  uint32_t offset = mcu_ota_partition_->size;
 
   while (offset > 0) {
     uint32_t chunk = (offset >= sizeof(buf)) ? sizeof(buf) : offset;
     offset -= chunk;
-    err = esp_flash_read(NULL, buf, MCU_OTA_FLASH_OFFSET + offset, chunk);
+    err = esp_partition_read(mcu_ota_partition_, offset, buf, chunk);
     if (err != ESP_OK) {
-      ESP_LOGE(TAG, "OTA: flash read error at 0x%06x: 0x%x", MCU_OTA_FLASH_OFFSET + offset, err);
+      ESP_LOGE(TAG, "OTA: partition read error at offset %u: 0x%x", offset, err);
       return 0;
     }
     for (int i = chunk - 1; i >= 0; i--) {
@@ -1797,6 +1827,10 @@ uint32_t FP2Component::ota_detect_firmware_size_() {
 
 #ifdef USE_RADAR_FW_HTTP
 bool FP2Component::ota_download_firmware_() {
+  if (mcu_ota_partition_ == nullptr) {
+    ESP_LOGE(TAG, "OTA: mcu_ota partition not available (custom partition table required)");
+    return false;
+  }
   if (radar_firmware_url_.empty()) {
     ESP_LOGE(TAG, "OTA: no radar_firmware_url configured");
     return false;
@@ -1808,6 +1842,7 @@ bool FP2Component::ota_download_firmware_() {
   config.url = radar_firmware_url_.c_str();
   config.timeout_ms = 30000;
   config.buffer_size = 4096;
+  config.crt_bundle_attach = esp_crt_bundle_attach;  // HTTPS via mbedTLS cert bundle
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (client == nullptr) {
@@ -1838,8 +1873,9 @@ bool FP2Component::ota_download_firmware_() {
     return false;
   }
 
-  if ((uint32_t)content_length > MCU_OTA_FLASH_SIZE) {
-    ESP_LOGE(TAG, "OTA: firmware too large (%d bytes, max %u)", content_length, MCU_OTA_FLASH_SIZE);
+  if ((uint32_t)content_length > mcu_ota_partition_->size) {
+    ESP_LOGE(TAG, "OTA: firmware too large (%d bytes, partition is %u)",
+             content_length, (unsigned) mcu_ota_partition_->size);
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return false;
@@ -1847,14 +1883,25 @@ bool FP2Component::ota_download_firmware_() {
 
   ESP_LOGI(TAG, "OTA: firmware size %d bytes, erasing flash...", content_length);
 
-  // Erase the flash region (must be 4KB-aligned)
+  // Erase the partition in 64KB chunks. A single multi-MB erase call blocks
+  // ~20-30s, which starves the idle task and trips the IDF task watchdog.
+  // Yielding between chunks keeps the scheduler alive.
   uint32_t erase_size = ((content_length + 4095) / 4096) * 4096;
-  err = esp_flash_erase_region(NULL, MCU_OTA_FLASH_OFFSET, erase_size);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "OTA: flash erase failed (0x%x)", err);
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-    return false;
+  const uint32_t ERASE_CHUNK = 64 * 1024;
+  for (uint32_t off = 0; off < erase_size; off += ERASE_CHUNK) {
+    uint32_t this_chunk = std::min(ERASE_CHUNK, erase_size - off);
+    err = esp_partition_erase_range(mcu_ota_partition_, off, this_chunk);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "OTA: partition erase failed at offset %u (0x%x)", off, err);
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+      return false;
+    }
+    App.feed_wdt();
+    delay(1);  // yield to scheduler (idle task must run)
+    if ((off & 0xfffff) == 0) {
+      ESP_LOGI(TAG, "OTA: erased %u/%u bytes", off + this_chunk, erase_size);
+    }
   }
 
   // Stream firmware to flash in chunks
@@ -1884,9 +1931,9 @@ bool FP2Component::ota_download_firmware_() {
       header_validated = true;
     }
 
-    err = esp_flash_write(NULL, buf, MCU_OTA_FLASH_OFFSET + written, read);
+    err = esp_partition_write(mcu_ota_partition_, written, buf, read);
     if (err != ESP_OK) {
-      ESP_LOGE(TAG, "OTA: flash write failed at offset %u (0x%x)", written, err);
+      ESP_LOGE(TAG, "OTA: partition write failed at offset %u (0x%x)", written, err);
       esp_http_client_close(client);
       esp_http_client_cleanup(client);
       return false;
@@ -1898,6 +1945,11 @@ bool FP2Component::ota_download_firmware_() {
       ESP_LOGI(TAG, "OTA: download %d%% (%u/%d bytes)", pct, written, content_length);
       last_pct = pct;
     }
+
+    // Yield to scheduler every chunk. HTTPS reads + flash writes together
+    // can starve the idle task past the 5s task watchdog timeout.
+    App.feed_wdt();
+    delay(1);
   }
 
   esp_http_client_close(client);
@@ -1905,7 +1957,7 @@ bool FP2Component::ota_download_firmware_() {
 
   // Verify what we wrote by re-reading the header
   uint8_t verify[4];
-  esp_flash_read(NULL, verify, MCU_OTA_FLASH_OFFSET, 4);
+  esp_partition_read(mcu_ota_partition_, 0, verify, 4);
   if (verify[0] != 'M' || verify[1] != 'S' || verify[2] != 'T' || verify[3] != 'R') {
     ESP_LOGE(TAG, "OTA: flash verification failed!");
     return false;
@@ -1916,11 +1968,74 @@ bool FP2Component::ota_download_firmware_() {
 }
 #endif  // USE_RADAR_FW_HTTP
 
+void FP2Component::trigger_radar_ota_probe() {
+  if (ota_state_ != OtaState::IDLE) {
+    ESP_LOGW(TAG, "Radar OTA already in progress, probe skipped");
+    return;
+  }
+
+  ESP_LOGW(TAG, "=== Radar OTA Probe: SAFE TEST (no flash write) ===");
+  ESP_LOGW(TAG, "Step 1: send WRITE 0x0127 (OTA_SET_FLAG) and check for ACK");
+  ESP_LOGW(TAG, "Step 2: if ACK'd, watch for sustained 'C' (0x43) from XMODEM bootloader");
+  ESP_LOGW(TAG, "Step 3: on handshake confirm, send CAN x3 to abort without writing flash");
+
+  ota_probe_only_ = true;
+  ota_firmware_size_ = 0;
+  ota_firmware_offset_ = 0;
+  ota_block_num_ = 1;
+  ota_retry_count_ = 0;
+  ota_can_count_ = 0;
+  ota_probe_c_count_ = 0;
+  ota_probe_last_c_millis_ = 0;
+  ota_probe_sof_count_ = 0;
+
+  uint32_t drops_before = diag_drops;
+  uint32_t acks_before = diag_acks;
+
+  enqueue_command_(OpCode::WRITE, AttrId::OTA_SET_FLAG, true);
+
+  // Flush the OTA_SET_FLAG command through the normal protocol to see
+  // if the radar ACKs it. If it drops, the radar firmware doesn't accept
+  // this SubID — no point waiting for a phantom XMODEM handshake.
+  //
+  // We're blocking inside press_action(), so loop() is not running. We must
+  // manually drain incoming UART bytes through the frame decoder, otherwise
+  // the ACK frame sits in the RX buffer and ACK_TIMEOUT fires every time.
+  uint32_t flush_start = millis();
+  while (!command_queue_.empty() && (millis() - flush_start) < 3000) {
+    process_command_queue_();
+    while (available()) {
+      uint8_t byte;
+      read_byte(&byte);
+      handle_incoming_byte_(byte);
+    }
+    delay(10);
+  }
+
+  bool got_drop = (diag_drops > drops_before);
+  bool got_ack = (diag_acks > acks_before);
+
+  if (got_drop || !got_ack) {
+    ESP_LOGE(TAG, "=== PROBE RESULT: OTA TRIGGER REJECTED ===");
+    ESP_LOGE(TAG, "Radar did not ACK SubID 0x0127 within 3 retries.");
+    ESP_LOGE(TAG, "This firmware revision does not accept this OTA trigger as written.");
+    ESP_LOGE(TAG, "Next steps: inspect stock ESP32 firmware for exact 0x0127 payload / sequence.");
+    ota_probe_only_ = false;
+    return;
+  }
+
+  ESP_LOGW(TAG, "OTA_SET_FLAG ACK'd. Watching for XMODEM handshake (20s)...");
+  ota_state_ = OtaState::WAITING_HANDSHAKE;
+  ota_state_start_millis_ = millis();
+}
+
 void FP2Component::trigger_radar_ota() {
   if (ota_state_ != OtaState::IDLE) {
     ESP_LOGW(TAG, "Radar OTA already in progress");
     return;
   }
+
+  ota_probe_only_ = false;
 
   ESP_LOGW(TAG, "=== Radar OTA: validating firmware ===");
 
@@ -1952,8 +2067,10 @@ void FP2Component::trigger_radar_ota() {
     ESP_LOGE(TAG, "OTA ABORTED: firmware too small (%u bytes)", ota_firmware_size_);
     return;
   }
-  if (ota_firmware_size_ > MCU_OTA_FLASH_SIZE) {
-    ESP_LOGE(TAG, "OTA ABORTED: firmware too large (%u bytes, max %u)", ota_firmware_size_, MCU_OTA_FLASH_SIZE);
+  if (mcu_ota_partition_ == nullptr ||
+      ota_firmware_size_ > mcu_ota_partition_->size) {
+    ESP_LOGE(TAG, "OTA ABORTED: firmware too large or partition missing (%u bytes)",
+             ota_firmware_size_);
     return;
   }
 
@@ -1981,15 +2098,14 @@ void FP2Component::trigger_radar_ota() {
 }
 
 void FP2Component::ota_send_current_block_() {
-  // Read 1024 bytes from flash
+  // Read 1024 bytes from flash via mcu_ota partition
   uint8_t *data = &ota_packet_buf_[3];  // Skip STX, blk, ~blk
-  uint32_t read_offset = MCU_OTA_FLASH_OFFSET + ota_firmware_offset_;
   uint32_t remaining = ota_firmware_size_ - ota_firmware_offset_;
   uint32_t to_read = (remaining >= XMODEM_BLOCK_SIZE) ? XMODEM_BLOCK_SIZE : remaining;
 
-  esp_err_t err = esp_flash_read(NULL, data, read_offset, to_read);
+  esp_err_t err = esp_partition_read(mcu_ota_partition_, ota_firmware_offset_, data, to_read);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Flash read error at 0x%06x", read_offset);
+    ESP_LOGE(TAG, "Flash read error at offset %u (err=0x%x)", ota_firmware_offset_, err);
     ota_state_ = OtaState::DONE;
     return;
   }
@@ -2027,17 +2143,43 @@ void FP2Component::ota_loop_() {
 
   switch (ota_state_) {
     case OtaState::WAITING_HANDSHAKE: {
-      // Wait for 'C' (CRC mode) or NAK from radar bootloader
+      // Looking for XMODEM-1K bootloader output. CRC mode: repeated 'C' (0x43)
+      // every ~3s. We require ≥2 'C' bytes separated by ≥500ms to suppress
+      // false positives from the radar's normal protocol traffic.
       while (available()) {
         uint8_t byte;
         read_byte(&byte);
-        if (byte == 'C' || byte == 0x15) {  // 'C' or NAK
-          ESP_LOGI(TAG, "OTA: radar handshake received (0x%02X), starting transfer", byte);
-          ota_state_ = OtaState::TRANSFERRING;
-          ota_state_start_millis_ = now;
-          ota_retry_count_ = 0;
-          ota_send_current_block_();
-          return;
+
+        if (byte == 0x55) {
+          // Aqara protocol SOF — radar is still in normal mode, not bootloader
+          ota_probe_sof_count_++;
+        } else if (byte == 'C') {
+          if (ota_probe_c_count_ == 0 ||
+              (now - ota_probe_last_c_millis_) >= 500) {
+            ota_probe_c_count_++;
+            ota_probe_last_c_millis_ = now;
+            if (ota_probe_only_) {
+              ESP_LOGW(TAG, "Probe: isolated 'C' #%u received", ota_probe_c_count_);
+            }
+          }
+
+          if (ota_probe_c_count_ >= 2) {
+            if (ota_probe_only_) {
+              ESP_LOGW(TAG, "=== PROBE SUCCESS: sustained XMODEM 'C' handshake confirmed ===");
+              ESP_LOGW(TAG, "OTA endpoint confirmed. Sending CAN x3 to abort without writing flash.");
+              uint8_t can_abort[3] = {0x18, 0x18, 0x18};
+              write_array(can_abort, 3);
+              flush();
+              ota_state_ = OtaState::DONE;
+              return;
+            }
+            ESP_LOGI(TAG, "OTA: XMODEM handshake confirmed, starting transfer");
+            ota_state_ = OtaState::TRANSFERRING;
+            ota_state_start_millis_ = now;
+            ota_retry_count_ = 0;
+            ota_send_current_block_();
+            return;
+          }
         } else if (byte == 0x18) {  // CAN
           ota_can_count_++;
           if (ota_can_count_ > 10) {
@@ -2049,7 +2191,18 @@ void FP2Component::ota_loop_() {
       }
       // Timeout check
       if (now - ota_state_start_millis_ > OTA_HANDSHAKE_TIMEOUT_MS) {
-        ESP_LOGE(TAG, "OTA: handshake timeout (20s), aborting");
+        if (ota_probe_only_) {
+          ESP_LOGE(TAG, "=== PROBE RESULT: NO XMODEM HANDSHAKE (20s) ===");
+          ESP_LOGE(TAG, "OTA_SET_FLAG was ACK'd but radar stayed in normal protocol mode");
+          ESP_LOGE(TAG, "  isolated 'C' bytes: %u (need >=2 for success)", ota_probe_c_count_);
+          ESP_LOGE(TAG, "  Aqara SOF (0x55) bytes seen: %u", ota_probe_sof_count_);
+          if (ota_probe_sof_count_ > 0) {
+            ESP_LOGE(TAG, "  -> radar is still emitting normal protocol frames");
+            ESP_LOGE(TAG, "  -> setting 0x0127=1 is insufficient to trigger XMODEM bootloader");
+          }
+        } else {
+          ESP_LOGE(TAG, "OTA: handshake timeout (20s), aborting");
+        }
         ota_state_ = OtaState::DONE;
       }
       break;
@@ -2147,7 +2300,11 @@ void FP2Component::ota_loop_() {
     }
 
     case OtaState::DONE: {
-      ESP_LOGI(TAG, "OTA: resetting radar and resuming normal operation");
+      if (ota_probe_only_) {
+        ESP_LOGW(TAG, "=== PROBE DONE: resetting radar to recover from bootloader ===");
+      } else {
+        ESP_LOGI(TAG, "OTA: resetting radar and resuming normal operation");
+      }
       // Reset the radar to restart it with new firmware
       if (reset_pin_ != nullptr) {
         reset_pin_->digital_write(false);
@@ -2162,6 +2319,7 @@ void FP2Component::ota_loop_() {
       command_queue_.clear();
       waiting_for_ack_attr_id_ = AttrId::INVALID;
       ota_state_ = OtaState::IDLE;
+      ota_probe_only_ = false;
       break;
     }
 
