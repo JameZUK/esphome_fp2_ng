@@ -696,6 +696,13 @@ protected:
   uint32_t ota_detect_firmware_size_();
   bool ota_download_firmware_();
   static uint16_t xmodem_crc16_(const uint8_t *data, size_t len);
+
+  // Dedicated FreeRTOS task for the XMODEM transfer. Running in a task instead
+  // of the cooperative main loop keeps the ACK→next-block round-trip as tight
+  // as possible, matching what the stock firmware does.
+  volatile bool ota_transfer_task_running_{false};
+  static void ota_transfer_task_entry_(void *arg);
+  void ota_transfer_task_run_();
   std::string radar_firmware_url_;
 };
 

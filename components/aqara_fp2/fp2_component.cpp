@@ -311,7 +311,12 @@ void FP2Component::loop() {
     }
   }
 
-  // During OTA, bypass normal protocol and run XMODEM state machine
+  // During OTA, bypass normal protocol. If the dedicated transfer task is
+  // running, keep the main loop completely out of the UART — otherwise drive
+  // the probe / recovery state machine from here.
+  if (ota_transfer_task_running_) {
+    return;
+  }
   if (ota_state_ != OtaState::IDLE) {
     ota_loop_();
     return;
@@ -2134,24 +2139,169 @@ void FP2Component::trigger_radar_ota() {
   }
 
   uint32_t blocks = ota_firmware_size_ / XMODEM_BLOCK_SIZE;
-  ESP_LOGW(TAG, "=== Starting Radar OTA: %u bytes (%u blocks, ~%u seconds) ===",
-           ota_firmware_size_, blocks, blocks / 50 + 10);
+  ESP_LOGW(TAG, "=== Starting Radar OTA: %u bytes (%u blocks) ===",
+           ota_firmware_size_, blocks);
   ESP_LOGW(TAG, "WARNING: Do not power off the device during transfer!");
 
   ota_firmware_offset_ = 0;
   ota_block_num_ = 1;
   ota_retry_count_ = 0;
   ota_can_count_ = 0;
-  ota_probe_c_count_ = 0;
-  ota_probe_last_c_millis_ = 0;
-  ota_probe_sof_count_ = 0;
 
-  // Send OTA trigger as a one-shot frame. See ota_send_trigger_frame_() for
-  // why we bypass the queue/ACK machinery here.
+  if (ota_transfer_task_running_) {
+    ESP_LOGW(TAG, "OTA: transfer task already running, ignoring press");
+    return;
+  }
+
+  // Gate main loop out of UART while the task drives the transfer.
+  ota_state_ = OtaState::TRANSFERRING;
+  ota_transfer_task_running_ = true;
+
+  BaseType_t ok = xTaskCreate(
+      &FP2Component::ota_transfer_task_entry_,
+      "fp2_ota_xfer",
+      8192,
+      this,
+      tskIDLE_PRIORITY + 2,
+      nullptr);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "OTA: failed to spawn transfer task");
+    ota_transfer_task_running_ = false;
+    ota_state_ = OtaState::IDLE;
+    return;
+  }
+  ESP_LOGI(TAG, "OTA: transfer task spawned");
+}
+
+void FP2Component::ota_transfer_task_entry_(void *arg) {
+  auto *self = static_cast<FP2Component *>(arg);
+  self->ota_transfer_task_run_();
+  // Important: set DONE before clearing the running flag so the main loop
+  // never observes TRANSFERRING with the task already gone.
+  self->ota_state_ = OtaState::DONE;
+  self->ota_transfer_task_running_ = false;
+  vTaskDelete(nullptr);
+}
+
+void FP2Component::ota_transfer_task_run_() {
+  ESP_LOGI(TAG, "[xfer] sending 0x0127 trigger and waiting for handshake");
   ota_send_trigger_frame_();
 
-  ota_state_ = OtaState::WAITING_HANDSHAKE;
-  ota_state_start_millis_ = millis();
+  // Drain any stale bytes (the trigger ACK we don't need, residual protocol frames)
+  // so we don't mistake them for XMODEM bytes.
+  while (available()) {
+    uint8_t drop;
+    read_byte(&drop);
+  }
+
+  // Wait for 'C' handshake — ≥2 'C's with ≥500 ms separation
+  uint32_t start = millis();
+  uint32_t last_c = 0;
+  uint32_t c_count = 0;
+  while (millis() - start < OTA_HANDSHAKE_TIMEOUT_MS) {
+    while (available()) {
+      uint8_t b;
+      read_byte(&b);
+      if (b == 'C') {
+        if (c_count == 0 || (millis() - last_c) >= 500) {
+          c_count++;
+          last_c = millis();
+          ESP_LOGI(TAG, "[xfer] handshake 'C' #%u", c_count);
+          if (c_count >= 2)
+            goto handshake_ok;
+        }
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  ESP_LOGE(TAG, "[xfer] handshake timeout — aborting");
+  return;
+
+handshake_ok:
+  ESP_LOGI(TAG, "[xfer] handshake confirmed, streaming %u blocks", ota_firmware_size_ / XMODEM_BLOCK_SIZE);
+
+  uint32_t xfer_start = millis();
+  uint32_t last_progress_pct = 0;
+  uint8_t retry_count = 0;
+  uint32_t can_count = 0;
+
+  while (ota_firmware_offset_ < ota_firmware_size_) {
+    ota_send_current_block_();
+
+    // Wait tight for ACK/NAK/CAN
+    uint32_t block_start = millis();
+    bool advanced = false;
+    bool retransmit = false;
+
+    while (!advanced && !retransmit) {
+      if (available()) {
+        uint8_t b;
+        read_byte(&b);
+        if (b == 0x06) {  // ACK
+          ota_firmware_offset_ += XMODEM_BLOCK_SIZE;
+          ota_block_num_++;
+          retry_count = 0;
+          advanced = true;
+        } else if (b == 0x15) {  // NAK
+          retry_count++;
+          if (retry_count >= OTA_MAX_RETRIES) {
+            ESP_LOGE(TAG, "[xfer] max NAK retries on block %d, aborting", ota_block_num_);
+            return;
+          }
+          ESP_LOGW(TAG, "[xfer] NAK on block %d, retry %d", ota_block_num_, retry_count);
+          retransmit = true;
+        } else if (b == 0x18) {  // CAN
+          can_count++;
+          if (can_count > 10) {
+            ESP_LOGE(TAG, "[xfer] cancelled by radar at block %d (offset %u)",
+                     ota_block_num_, ota_firmware_offset_);
+            return;
+          }
+        }
+        // ignore any other byte
+      } else if (millis() - block_start > OTA_TRANSFER_TIMEOUT_MS) {
+        retry_count++;
+        if (retry_count >= OTA_MAX_RETRIES) {
+          ESP_LOGE(TAG, "[xfer] timeout max retries on block %d", ota_block_num_);
+          return;
+        }
+        ESP_LOGW(TAG, "[xfer] timeout on block %d, retry %d", ota_block_num_, retry_count);
+        retransmit = true;
+      } else {
+        // Short sleep — task yield, keeps watchdog happy, doesn't burn CPU
+        vTaskDelay(1);  // 1 tick ≈ 10 ms; ACK inter-arrival is much longer than that
+      }
+    }
+
+    uint32_t pct = (uint64_t) ota_firmware_offset_ * 100 / ota_firmware_size_;
+    if (pct >= last_progress_pct + 5) {
+      last_progress_pct = pct;
+      uint32_t elapsed_s = (millis() - xfer_start) / 1000;
+      uint32_t rate_bps = elapsed_s ? (ota_firmware_offset_ / elapsed_s) : 0;
+      ESP_LOGI(TAG, "[xfer] %u%% (%u/%u bytes, %us elapsed, %u B/s)",
+               pct, ota_firmware_offset_, ota_firmware_size_, elapsed_s, rate_bps);
+    }
+  }
+
+  ESP_LOGI(TAG, "[xfer] all blocks ACK'd, sending EOT");
+  ota_send_eot_();
+
+  // Wait for final ACK on EOT
+  uint32_t eot_start = millis();
+  while (millis() - eot_start < OTA_TRANSFER_TIMEOUT_MS) {
+    if (available()) {
+      uint8_t b;
+      read_byte(&b);
+      if (b == 0x06) {
+        uint32_t total_s = (millis() - xfer_start) / 1000;
+        ESP_LOGW(TAG, "[xfer] === OTA COMPLETE: %u bytes in %u seconds ===",
+                 ota_firmware_size_, total_s);
+        return;
+      }
+    }
+    vTaskDelay(1);
+  }
+  ESP_LOGE(TAG, "[xfer] EOT timeout, radar did not confirm end-of-transfer");
 }
 
 void FP2Component::ota_send_current_block_() {
