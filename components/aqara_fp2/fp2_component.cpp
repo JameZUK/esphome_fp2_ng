@@ -380,21 +380,18 @@ void FP2Component::check_initialization_() {
   if (last_heartbeat_millis_ == 0)
     return;
 
-  // When sleep mode is active, skip init COMPLETELY. The radar booted
-  // with sleep_report_enable=1 in flash, FUN_000257d4 set mode to 9.
-  // ANY 0x01xx WRITE would trigger the scene mode mapper to mode 3,
-  // which clears sleep_report_enable and restarts. Send NOTHING.
-  if (sleep_mode_active_) {
-    init_done_ = true;
-    publish_radar_state_("Sleep");
-    ESP_LOGI(TAG, "Sleep mode — sending 0x0203 config sync (stock firmware does this)");
-    // SubID 0x0203 is in the 0x02xx range — scene mode mapper returns mode 11
-    // (not mode 3), so it does NOT clear sleep_report_enable. The stock firmware
-    // sends this on every first heartbeat when sleep is active. It may be the
-    // signal that tells the DSP to start vital signs processing.
-    enqueue_command_(OpCode::WRITE, (AttrId) 0x0203, (uint8_t) 0);
-    return;
-  }
+  // NOTE: earlier versions early-returned here for sleep_mode_active_ on
+  // the hypothesis that 0x01xx WRITEs in mode 9 would reset scene mode
+  // back to 3. Our Ghidra pass of FW3 (vitalsigns) and the stock ESP
+  // firmware never verified that — and empirical probes showed FW3's
+  // detection pipeline is DORMANT in mode 9 unless configured. The
+  // Aqara app + ALink spec confirm there's no dedicated "sleep learn"
+  // command; sleep monitoring is supposed to auto-start when FW3 sees
+  // a stable target. If FW3 isn't getting the config it needs (grids,
+  // presence/motion enable, location-report enable, zone params), it
+  // can't detect anything. So we now send the FULL init in sleep mode
+  // too and trust that the 0x02xx-range 0x0203 sync at the end of the
+  // sequence keeps sleep_report_enable intact.
 
   diag_init_at = millis();
   diag_init_used_ready = reinit_done;
@@ -599,6 +596,14 @@ void FP2Component::check_initialization_() {
     if (target_tracking_sensor_ != nullptr) {
       target_tracking_sensor_->set_has_state(false);
     }
+
+  // In sleep mode, also send the 0x0203=0 sync that stock firmware emits
+  // once per mode-9 boot. This is in the 0x02xx range (outside the scene-
+  // mode mapper) so it's safe to send alongside the full 0x01xx init.
+  if (sleep_mode_active_) {
+    enqueue_command_(OpCode::WRITE, (AttrId) 0x0203, (uint8_t) 0);
+    publish_radar_state_("Sleep");
+  }
 
   ESP_LOGI(TAG, "Init complete: %d commands queued (uptime=%u ms)",
            (int)command_queue_.size(), millis());
