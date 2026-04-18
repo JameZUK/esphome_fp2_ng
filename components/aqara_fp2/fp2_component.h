@@ -311,7 +311,16 @@ protected:
   FP2Component *parent_{nullptr};
 };
 
-class FP2SleepLearnProbeButton : public button::Button {
+class FP2ResetRadarButton : public button::Button {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void press_action() override;
+  FP2Component *parent_{nullptr};
+};
+
+class FP2RebootSensorButton : public button::Button {
 public:
   void set_parent(FP2Component *parent) { parent_ = parent; }
 
@@ -417,10 +426,15 @@ public:
     radar_ota_probe_button_ = btn;
     btn->set_parent(this);
   }
-  void set_sleep_learn_probe_button(FP2SleepLearnProbeButton *btn) {
-    sleep_learn_probe_button_ = btn;
+  void set_reset_radar_button(FP2ResetRadarButton *btn) {
+    reset_radar_button_ = btn;
     btn->set_parent(this);
   }
+  void set_reboot_sensor_button(FP2RebootSensorButton *btn) {
+    reboot_sensor_button_ = btn;
+    btn->set_parent(this);
+  }
+  void set_telnet_port(uint16_t port) { telnet_port_ = port; }
 
   void trigger_edge_calibration();
   void trigger_interference_calibration();
@@ -430,7 +444,8 @@ public:
   void trigger_radar_ota();
   void trigger_radar_fw_stage();
   void trigger_radar_ota_probe();
-  void trigger_sleep_learn_probe();
+  void trigger_reset_radar();
+  void trigger_reboot_sensor();
   void set_radar_firmware_url(const std::string &url) { radar_firmware_url_ = url; }
   void set_radar_fw_stage_button(FP2RadarFwStageButton *btn) {
     radar_fw_stage_button_ = btn;
@@ -603,16 +618,28 @@ protected:
   FP2RadarOtaButton *radar_ota_button_{nullptr};
   FP2RadarFwStageButton *radar_fw_stage_button_{nullptr};
   FP2RadarOtaProbeButton *radar_ota_probe_button_{nullptr};
-  FP2SleepLearnProbeButton *sleep_learn_probe_button_{nullptr};
+  FP2ResetRadarButton *reset_radar_button_{nullptr};
+  FP2RebootSensorButton *reboot_sensor_button_{nullptr};
 
-  // Sleep-learning command brute-force probe — tries a hard-coded list of
-  // candidate SubIDs to find the one that initiates "sleep space intelligent
-  // learning" per Aqara's FAQ. Runs in a dedicated FreeRTOS task so the
-  // 25-minute sequence doesn't block the main loop.
-  volatile bool sleep_learn_probe_running_{false};
-  static void sleep_learn_probe_task_entry_(void *arg);
-  void sleep_learn_probe_task_run_();
-  void send_probe_write_frame_(uint16_t subid, uint8_t dtype, uint8_t value);
+  // Telnet server state — TCP bridge for direct radar interaction.
+  // See start_telnet_() / telnet_task_entry_() in the .cpp for details.
+  uint16_t telnet_port_{6666};
+  int telnet_listen_fd_{-1};
+  int telnet_client_fd_{-1};
+  volatile bool telnet_raw_mode_{false};
+  uint8_t telnet_rx_burst_[256];
+  size_t telnet_rx_burst_len_{0};
+  uint32_t telnet_rx_burst_start_ms_{0};
+  void start_telnet_();
+  static void telnet_task_entry_(void *arg);
+  void telnet_task_run_();
+  void telnet_send_line_(const char *line);
+  void telnet_send_line_(const std::string &line) { telnet_send_line_(line.c_str()); }
+  void telnet_handle_command_(const std::string &line);
+  void telnet_observe_rx_(uint8_t byte);
+  void telnet_flush_rx_burst_();
+  bool telnet_is_raw_mode_() const { return telnet_raw_mode_; }
+  void telnet_close_client_();
   bool location_reporting_active_{false};
   uint32_t target_tracking_interval_ms_{500};
   uint32_t last_target_publish_millis_{0};
@@ -738,8 +765,6 @@ protected:
   // Raw UART trace window — when set_operating_mode() fires this, every TX and
   // RX byte is logged in hex with timestamps for diagnostic purposes. Armed
   // for 15 s after a mode switch is requested.
-  uint32_t mode_switch_trace_until_ms_{0};
-  void log_raw_trace_(const char *dir, const uint8_t *data, size_t len);
   std::string radar_firmware_url_;
 };
 

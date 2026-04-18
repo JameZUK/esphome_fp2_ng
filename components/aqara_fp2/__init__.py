@@ -46,7 +46,8 @@ FP2DeleteFalseTargetsButton = aqara_fp2_ns.class_("FP2DeleteFalseTargetsButton",
 FP2RadarOtaButton = aqara_fp2_ns.class_("FP2RadarOtaButton", button.Button)
 FP2RadarFwStageButton = aqara_fp2_ns.class_("FP2RadarFwStageButton", button.Button)
 FP2RadarOtaProbeButton = aqara_fp2_ns.class_("FP2RadarOtaProbeButton", button.Button)
-FP2SleepLearnProbeButton = aqara_fp2_ns.class_("FP2SleepLearnProbeButton", button.Button)
+FP2ResetRadarButton = aqara_fp2_ns.class_("FP2ResetRadarButton", button.Button)
+FP2RebootSensorButton = aqara_fp2_ns.class_("FP2RebootSensorButton", button.Button)
 FP2Zone = aqara_fp2_ns.class_("FP2Zone", cg.Component)
 
 CONF_FP2_ID = "fp2_id"
@@ -88,7 +89,9 @@ CONF_CLEAR_INTERFERENCE = "clear_interference"
 CONF_RADAR_OTA = "radar_ota"
 CONF_RADAR_FW_STAGE = "radar_fw_stage"
 CONF_RADAR_OTA_PROBE = "radar_ota_probe"
-CONF_SLEEP_LEARN_PROBE = "sleep_learn_probe"
+CONF_RESET_RADAR = "reset_radar"
+CONF_REBOOT_SENSOR = "reboot_sensor"
+CONF_TELNET_PORT = "telnet_port"
 CONF_FALL_DETECTION = "fall_detection"
 CONF_FALL_OVERTIME = "fall_overtime"
 CONF_FALL_OVERTIME_PERIOD = "fall_overtime_period"
@@ -299,11 +302,17 @@ CONFIG_SCHEMA = (
                 icon="mdi:radar",
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
-            cv.Optional(CONF_SLEEP_LEARN_PROBE): button.button_schema(
-                FP2SleepLearnProbeButton,
-                icon="mdi:brain",
+            cv.Optional(CONF_RESET_RADAR): button.button_schema(
+                FP2ResetRadarButton,
+                icon="mdi:restart",
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(CONF_REBOOT_SENSOR): button.button_schema(
+                FP2RebootSensorButton,
+                icon="mdi:restart-alert",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_TELNET_PORT, default=6666): cv.port,
 
             cv.Optional("edge_label_grid_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
             cv.Optional("entry_exit_grid_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
@@ -396,7 +405,8 @@ SENSOR_MAP = {
     CONF_RADAR_OTA: (button.new_button, "set_radar_ota_button"),
     CONF_RADAR_FW_STAGE: (button.new_button, "set_radar_fw_stage_button"),
     CONF_RADAR_OTA_PROBE: (button.new_button, "set_radar_ota_probe_button"),
-    CONF_SLEEP_LEARN_PROBE: (button.new_button, "set_sleep_learn_probe_button"),
+    CONF_RESET_RADAR: (button.new_button, "set_reset_radar_button"),
+    CONF_REBOOT_SENSOR: (button.new_button, "set_reboot_sensor_button"),
     CONF_TARGET_TRACKING: (text_sensor_.new_text_sensor, "set_target_tracking_sensor"),
 
     # Text config sensors
@@ -441,6 +451,7 @@ async def to_code(config):
     await uart.register_uart_device(var, config)
 
     cg.add(var.set_debug_mode(config[CONF_DEBUG_MODE]))
+    cg.add(var.set_telnet_port(config[CONF_TELNET_PORT]))
 
     if CONF_RADAR_FIRMWARE_URL in config:
         cg.add(var.set_radar_firmware_url(config[CONF_RADAR_FIRMWARE_URL]))

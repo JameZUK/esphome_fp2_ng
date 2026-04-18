@@ -12,6 +12,11 @@
 #include <esp_partition.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <lwip/sockets.h>
+#include <lwip/netdb.h>
+#include <esp_system.h>
+#include <cstring>
+#include <string>
 #ifdef USE_RADAR_FW_HTTP
 #include <esp_http_client.h>
 #include <esp_crt_bundle.h>
@@ -83,6 +88,9 @@ void FP2Component::setup() {
   // GPIO Reset
   perform_reset_();
   publish_radar_state_("Booting");
+
+  // Start telnet bridge (TCP server on telnet_port_, default 6666).
+  start_telnet_();
 }
 
 void FP2Component::perform_reset_() {
@@ -169,11 +177,6 @@ void FP2Component::set_operating_mode(const std::string &mode) {
 
   ESP_LOGI(TAG, "Operating mode: %s (scene=%d, sleep=%d)", mode.c_str(), scene_mode, sleep);
   sleep_mode_active_ = sleep;
-
-  // Arm raw UART trace for 15 s so we can see exactly what goes across during
-  // the mode-switch sequence. This is the "doesn't actually switch" debugging.
-  mode_switch_trace_until_ms_ = millis() + 15000;
-  ESP_LOGW(TAG, "=== MODE SWITCH TRACE: armed for 15 seconds ===");
 
   // Save mode index to flash for restore on boot
   uint8_t mode_index = 0;
@@ -331,10 +334,16 @@ void FP2Component::loop() {
   while (available()) {
     uint8_t byte;
     read_byte(&byte);
-    log_raw_trace_("RX", &byte, 1);
-    handle_incoming_byte_(byte);
+    telnet_observe_rx_(byte);
+    // In raw mode the telnet client owns the UART — skip ESPHome's frame
+    // decode so no ACKs/commands get injected underneath the client.
+    if (!telnet_is_raw_mode_()) {
+      handle_incoming_byte_(byte);
+    }
     bytes_read++;
   }
+  // Flush accumulated RX bytes to the telnet client as one line per idle gap.
+  telnet_flush_rx_burst_();
 
 
   if (debug_mode_ && bytes_read > 0) {
@@ -671,7 +680,17 @@ void FP2Component::send_next_command_() {
   frame.push_back((crc >> 8) & 0xFF);
 
   write_array(frame);
-  log_raw_trace_("TX", frame.data(), frame.size());
+  // Telnet client sees our TX frames too — useful for Python scripts to see
+  // what the ESP is injecting vs what it's receiving.
+  if (telnet_client_fd_ >= 0) {
+    char line[256];
+    int pos = snprintf(line, sizeof(line), "TXLOG t=%u", (unsigned) millis());
+    for (size_t i = 0; i < frame.size() && pos + 4 < (int) sizeof(line); i++) {
+      pos += snprintf(line + pos, sizeof(line) - pos, " %02X", frame[i]);
+    }
+    pos += snprintf(line + pos, sizeof(line) - pos, "\n");
+    telnet_send_line_(line);
+  }
   last_command_sent_millis_ = millis();
 
   // Only WRITE commands expect an ACK from the radar
@@ -1782,9 +1801,15 @@ void FP2RadarOtaProbeButton::press_action() {
   }
 }
 
-void FP2SleepLearnProbeButton::press_action() {
+void FP2ResetRadarButton::press_action() {
   if (this->parent_ != nullptr) {
-    this->parent_->trigger_sleep_learn_probe();
+    this->parent_->trigger_reset_radar();
+  }
+}
+
+void FP2RebootSensorButton::press_action() {
+  if (this->parent_ != nullptr) {
+    this->parent_->trigger_reboot_sensor();
   }
 }
 
@@ -1846,20 +1871,6 @@ void FP2Component::trigger_radar_fw_stage() {
 #else
   ESP_LOGE(TAG, "Stage firmware: HTTP download not available (radar_firmware_url not configured at build time)");
 #endif
-}
-
-void FP2Component::log_raw_trace_(const char *dir, const uint8_t *data, size_t len) {
-  if (millis() >= mode_switch_trace_until_ms_)
-    return;
-  // Format: "TRACE TX [N] HH HH HH ..." keep short so ESP log line limit isn't exceeded
-  char buf[4 + 3 * 64 + 1];
-  size_t dump = len > 64 ? 64 : len;
-  int pos = 0;
-  for (size_t i = 0; i < dump; i++) {
-    pos += snprintf(buf + pos, sizeof(buf) - pos, "%02X ", data[i]);
-    if (pos + 4 >= (int) sizeof(buf)) break;
-  }
-  ESP_LOGW(TAG, "TRACE %s [%u]: %s%s", dir, (unsigned) len, buf, len > 64 ? "..." : "");
 }
 
 void FP2Component::ota_send_trigger_frame_() {
@@ -2237,117 +2248,303 @@ void FP2Component::ota_transfer_task_entry_(void *arg) {
 }
 
 // ---------------------------------------------------------------------------
-// Sleep-learning command brute-force probe
+// Reset / reboot helpers
 // ---------------------------------------------------------------------------
 
-void FP2Component::send_probe_write_frame_(uint16_t subid, uint8_t dtype,
-                                            uint8_t value) {
-  // Build and send a single-byte-payload WRITE frame, bypassing the command
-  // queue. Uses a separate seq counter (initial 0xC0) so we can tell probe
-  // TXes apart from the main protocol's TXes in the raw trace.
-  static uint8_t probe_seq = 0xC0;
-
-  std::vector<uint8_t> frame;
-  frame.push_back(0x55);
-  frame.push_back(0x00);
-  frame.push_back(0x01);
-  frame.push_back(probe_seq++);
-  frame.push_back((uint8_t) OpCode::WRITE);
-  frame.push_back(0x00);  // Len Hi
-  frame.push_back(0x04);  // Len Lo (SubID + dtype + value = 4 bytes)
-
-  uint8_t sum = 0;
-  for (int i = 0; i < 7; i++)
-    sum += frame[i];
-  frame.push_back((uint8_t)(~(sum - 1)));
-
-  frame.push_back((subid >> 8) & 0xFF);
-  frame.push_back(subid & 0xFF);
-  frame.push_back(dtype);
-  frame.push_back(value);
-
-  uint16_t crc = crc16(frame.data(), frame.size());
-  frame.push_back(crc & 0xFF);
-  frame.push_back((crc >> 8) & 0xFF);
-
-  write_array(frame);
-  flush();
+void FP2Component::trigger_reset_radar() {
+  ESP_LOGW(TAG, "Reset radar: pulsing GPIO13");
+  if (reset_pin_ != nullptr) {
+    reset_pin_->digital_write(false);
+    delay(100);
+    reset_pin_->digital_write(true);
+  }
+  // Clear ESP-side radar state so it re-inits on the next heartbeat.
+  init_done_ = false;
+  radar_ready_ = false;
+  last_heartbeat_millis_ = 0;
+  state_ = SYNC;
+  command_queue_.clear();
+  waiting_for_ack_attr_id_ = AttrId::INVALID;
 }
 
-void FP2Component::trigger_sleep_learn_probe() {
-  if (sleep_learn_probe_running_) {
-    ESP_LOGW(TAG, "Sleep-learn probe: already running, ignoring press");
-    return;
-  }
-  sleep_learn_probe_running_ = true;
+void FP2Component::trigger_reboot_sensor() {
+  ESP_LOGW(TAG, "Reboot sensor: esp_restart() in 100ms");
+  delay(100);
+  esp_restart();
+}
+
+// ---------------------------------------------------------------------------
+// Telnet server — TCP bridge on telnet_port_ (default 6666)
+// ---------------------------------------------------------------------------
+//
+// Text protocol, one line per command. Line endings may be \n or \r\n.
+// Commands:
+//   TX <hex> [<hex> ...]   Write raw bytes to UART (hex pairs, space-separated
+//                          or packed). Checksum/CRC is caller's responsibility.
+//   MODE RAW               Stop ESPHome's UART decode path; client owns UART.
+//   MODE NORMAL            Resume normal ESPHome operation.
+//   RESET RADAR            Pulse GPIO13 and clear ESP-side init state.
+//   REBOOT ESP             esp_restart() — client will be disconnected.
+//   STATUS                 One line with mode, uptime, connection state.
+//   HELP                   List commands.
+// Asynchronous stream:
+//   RX t=<ms> <hex> ...    Each contiguous UART burst from the radar.
+//   TXLOG t=<ms> <hex> ... ESPHome's own TX frames (observability only).
+
+void FP2Component::start_telnet_() {
+  telnet_client_fd_ = -1;
+  telnet_listen_fd_ = -1;
   BaseType_t ok = xTaskCreate(
-      &FP2Component::sleep_learn_probe_task_entry_,
-      "fp2_sleep_probe",
-      4096,
+      &FP2Component::telnet_task_entry_,
+      "fp2_telnet",
+      6144,
       this,
       tskIDLE_PRIORITY + 1,
       nullptr);
   if (ok != pdPASS) {
-    ESP_LOGE(TAG, "Sleep-learn probe: failed to spawn task");
-    sleep_learn_probe_running_ = false;
+    ESP_LOGE(TAG, "Telnet: failed to create accept task");
     return;
   }
-  ESP_LOGI(TAG, "Sleep-learn probe: task spawned");
+  ESP_LOGI(TAG, "Telnet: listening on port %u", (unsigned) telnet_port_);
 }
 
-void FP2Component::sleep_learn_probe_task_entry_(void *arg) {
+void FP2Component::telnet_task_entry_(void *arg) {
   auto *self = static_cast<FP2Component *>(arg);
-  self->sleep_learn_probe_task_run_();
-  self->sleep_learn_probe_running_ = false;
+  self->telnet_task_run_();
   vTaskDelete(nullptr);
 }
 
-void FP2Component::sleep_learn_probe_task_run_() {
-  // Candidate SubIDs to probe. Gaps in the sleep-related 0x01xx range,
-  // skipping anything already known to be emitted or configured by our
-  // driver. If stock Aqara's "sleep space intelligent learning" command
-  // lives in this range, one of these writes should produce observable
-  // behaviour (new SubID responses, radar soft-reset, sleep-sensor
-  // transitions). Each write is BOOL=1 on the theory that the learning
-  // flag is set via a simple enable (matches the auto_edge_setting_on
-  // pattern Ghidra identified).
-  static const uint16_t CANDIDATES[] = {
-    0x0157, 0x0158, 0x015A, 0x015B, 0x015C, 0x015D, 0x015E, 0x015F,
-    0x0160, 0x0162, 0x0163, 0x0164, 0x0165, 0x0166,
-    0x016A, 0x016B, 0x016C, 0x016D, 0x016E, 0x016F, 0x0170,
-    0x0172, 0x0173, 0x0174, 0x0175,
-    0x0179, 0x017A, 0x017B, 0x017C, 0x017D, 0x017E, 0x017F,
-  };
-  const uint32_t N = sizeof(CANDIDATES) / sizeof(CANDIDATES[0]);
-  const uint32_t WAIT_MS = 45000;
+void FP2Component::telnet_task_run_() {
+  struct sockaddr_in server_addr = {};
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  server_addr.sin_port = htons(telnet_port_);
 
-  ESP_LOGW(TAG, "=== SLEEP LEARN PROBE: %u candidates x %u s (~%u min) ===",
-           (unsigned) N, (unsigned)(WAIT_MS / 1000),
-           (unsigned)(N * WAIT_MS / 60000));
-  ESP_LOGW(TAG, "Watch for: radar soft-reset (hb=0), new SubID RX frames, "
-                "sleep-sensor state changes, or sustained 'C' bytes.");
-
-  for (uint32_t i = 0; i < N; i++) {
-    uint16_t subid = CANDIDATES[i];
-    ESP_LOGW(TAG, "--- Probe %u/%u: TX op=2 SubID=0x%04X dtype=0x04 val=0x01 ---",
-             (unsigned)(i + 1), (unsigned) N, subid);
-
-    // Reuse the mode-switch trace window — every TX/RX byte during the
-    // observation window gets logged in hex for post-hoc analysis.
-    mode_switch_trace_until_ms_ = millis() + WAIT_MS;
-
-    send_probe_write_frame_(subid, 0x04, 0x01);
-
-    // Sleep the task for WAIT_MS while the radar does whatever it's going
-    // to do. vTaskDelay yields to the main loop so normal protocol parsing
-    // continues and heartbeats / ACKs are logged.
-    uint32_t start = millis();
-    while (millis() - start < WAIT_MS) {
-      vTaskDelay(pdMS_TO_TICKS(100));
-    }
+  telnet_listen_fd_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (telnet_listen_fd_ < 0) {
+    ESP_LOGE(TAG, "Telnet: socket() failed");
+    return;
+  }
+  int yes = 1;
+  setsockopt(telnet_listen_fd_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+  if (bind(telnet_listen_fd_, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
+    ESP_LOGE(TAG, "Telnet: bind(%u) failed", (unsigned) telnet_port_);
+    close(telnet_listen_fd_);
+    telnet_listen_fd_ = -1;
+    return;
+  }
+  if (listen(telnet_listen_fd_, 1) < 0) {
+    ESP_LOGE(TAG, "Telnet: listen() failed");
+    close(telnet_listen_fd_);
+    telnet_listen_fd_ = -1;
+    return;
   }
 
-  ESP_LOGW(TAG, "=== SLEEP LEARN PROBE: complete — review logs for TRACE lines ===");
+  while (true) {
+    struct sockaddr_in client_addr = {};
+    socklen_t addrlen = sizeof(client_addr);
+    int new_fd = accept(telnet_listen_fd_, (struct sockaddr *) &client_addr, &addrlen);
+    if (new_fd < 0) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+    // Only one client at a time — kick any existing client.
+    if (telnet_client_fd_ >= 0) {
+      const char *bye = "NOTICE new client connected, closing\n";
+      send(telnet_client_fd_, bye, strlen(bye), 0);
+      close(telnet_client_fd_);
+    }
+    telnet_client_fd_ = new_fd;
+    ESP_LOGI(TAG, "Telnet: client connected (fd=%d)", new_fd);
+    const char *banner =
+        "# FP2 telnet bridge. TX <hex>, MODE RAW|NORMAL, RESET RADAR, "
+        "REBOOT ESP, STATUS, HELP\n";
+    send(new_fd, banner, strlen(banner), 0);
+
+    // Per-client read loop — parses commands line by line.
+    std::string line_buf;
+    char recv_buf[256];
+    while (true) {
+      ssize_t n = recv(new_fd, recv_buf, sizeof(recv_buf), 0);
+      if (n <= 0) {
+        ESP_LOGI(TAG, "Telnet: client disconnected");
+        break;
+      }
+      for (ssize_t i = 0; i < n; i++) {
+        char c = recv_buf[i];
+        if (c == '\r')
+          continue;
+        if (c == '\n') {
+          if (!line_buf.empty()) {
+            telnet_handle_command_(line_buf);
+            line_buf.clear();
+          }
+        } else {
+          if (line_buf.size() < 512)
+            line_buf.push_back(c);
+        }
+      }
+    }
+    telnet_close_client_();
+  }
+}
+
+void FP2Component::telnet_close_client_() {
+  if (telnet_client_fd_ >= 0) {
+    close(telnet_client_fd_);
+    telnet_client_fd_ = -1;
+  }
+  telnet_raw_mode_ = false;  // failsafe — never leave radio gagged
+}
+
+void FP2Component::telnet_send_line_(const char *line) {
+  int fd = telnet_client_fd_;
+  if (fd < 0)
+    return;
+  ssize_t n = send(fd, line, strlen(line), MSG_DONTWAIT);
+  if (n < 0) {
+    // Client likely dropped — close and let accept loop pick up new one
+    telnet_close_client_();
+  }
+}
+
+static int hex_nibble_(char c) {
+  if (c >= '0' && c <= '9')
+    return c - '0';
+  if (c >= 'a' && c <= 'f')
+    return 10 + c - 'a';
+  if (c >= 'A' && c <= 'F')
+    return 10 + c - 'A';
+  return -1;
+}
+
+void FP2Component::telnet_handle_command_(const std::string &line) {
+  // Uppercase the first word for matching
+  size_t space = line.find(' ');
+  std::string cmd = line.substr(0, space);
+  std::string rest = space == std::string::npos ? "" : line.substr(space + 1);
+  for (auto &c : cmd)
+    c = (c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : c;
+
+  if (cmd == "TX") {
+    // Parse hex pairs (ignore whitespace)
+    std::vector<uint8_t> bytes;
+    int hi = -1;
+    for (char c : rest) {
+      if (c == ' ' || c == '\t')
+        continue;
+      int n = hex_nibble_(c);
+      if (n < 0) {
+        telnet_send_line_("ERR bad hex digit\n");
+        return;
+      }
+      if (hi < 0) {
+        hi = n;
+      } else {
+        bytes.push_back((uint8_t)((hi << 4) | n));
+        hi = -1;
+      }
+    }
+    if (hi >= 0) {
+      telnet_send_line_("ERR odd hex digit count\n");
+      return;
+    }
+    if (bytes.empty()) {
+      telnet_send_line_("ERR TX needs hex bytes\n");
+      return;
+    }
+    write_array(bytes.data(), bytes.size());
+    flush();
+    char reply[64];
+    snprintf(reply, sizeof(reply), "OK TX %u bytes\n", (unsigned) bytes.size());
+    telnet_send_line_(reply);
+    return;
+  }
+  if (cmd == "MODE") {
+    // MODE RAW / MODE NORMAL
+    std::string arg = rest;
+    for (auto &c : arg)
+      c = (c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : c;
+    if (arg == "RAW") {
+      telnet_raw_mode_ = true;
+      telnet_send_line_("OK MODE RAW (ESPHome UART decode suspended)\n");
+    } else if (arg == "NORMAL") {
+      telnet_raw_mode_ = false;
+      telnet_send_line_("OK MODE NORMAL\n");
+    } else {
+      telnet_send_line_("ERR MODE needs RAW or NORMAL\n");
+    }
+    return;
+  }
+  if (cmd == "RESET" && rest == "RADAR") {
+    trigger_reset_radar();
+    telnet_send_line_("OK RESET RADAR\n");
+    return;
+  }
+  if (cmd == "REBOOT" && rest == "ESP") {
+    telnet_send_line_("OK REBOOT ESP (goodbye)\n");
+    delay(50);
+    trigger_reboot_sensor();
+    return;
+  }
+  if (cmd == "STATUS") {
+    char reply[256];
+    snprintf(reply, sizeof(reply),
+             "STATUS mode=%s uptime_ms=%u hb=%u init=%d rdy=%d q=%d ack=%u drop=%u\n",
+             telnet_raw_mode_ ? "RAW" : "NORMAL",
+             (unsigned) millis(),
+             (unsigned) last_heartbeat_millis_,
+             (int) init_done_,
+             (int) radar_ready_,
+             (int) command_queue_.size(),
+             (unsigned) diag_acks,
+             (unsigned) diag_drops);
+    telnet_send_line_(reply);
+    return;
+  }
+  if (cmd == "HELP" || cmd == "?") {
+    telnet_send_line_(
+        "HELP\n"
+        "  TX <hex>           Write raw bytes to radar UART\n"
+        "  MODE RAW           Suspend ESPHome UART decode (client exclusive)\n"
+        "  MODE NORMAL        Resume ESPHome UART decode\n"
+        "  RESET RADAR        Pulse GPIO13, clear ESP-side init state\n"
+        "  REBOOT ESP         esp_restart() (connection drops)\n"
+        "  STATUS             Print current state\n"
+        "Stream: RX t=<ms> <hex>... | TXLOG t=<ms> <hex>...\n"
+        "OK HELP\n");
+    return;
+  }
+  telnet_send_line_("ERR unknown command — try HELP\n");
+}
+
+void FP2Component::telnet_observe_rx_(uint8_t byte) {
+  if (telnet_client_fd_ < 0)
+    return;
+  if (telnet_rx_burst_len_ == 0) {
+    telnet_rx_burst_start_ms_ = millis();
+  }
+  if (telnet_rx_burst_len_ < sizeof(telnet_rx_burst_)) {
+    telnet_rx_burst_[telnet_rx_burst_len_++] = byte;
+  }
+}
+
+void FP2Component::telnet_flush_rx_burst_() {
+  if (telnet_rx_burst_len_ == 0)
+    return;
+  if (telnet_client_fd_ < 0) {
+    telnet_rx_burst_len_ = 0;
+    return;
+  }
+  // Format: "RX t=<ms> HH HH HH ...\n" with enough buffer for the max burst
+  char out[4 + 12 + 3 * 256 + 2];
+  int pos = snprintf(out, sizeof(out), "RX t=%u", (unsigned) telnet_rx_burst_start_ms_);
+  for (size_t i = 0; i < telnet_rx_burst_len_ && pos + 4 < (int) sizeof(out); i++) {
+    pos += snprintf(out + pos, sizeof(out) - pos, " %02X", telnet_rx_burst_[i]);
+  }
+  pos += snprintf(out + pos, sizeof(out) - pos, "\n");
+  telnet_send_line_(out);
+  telnet_rx_burst_len_ = 0;
 }
 
 void FP2Component::ota_transfer_task_run_() {
