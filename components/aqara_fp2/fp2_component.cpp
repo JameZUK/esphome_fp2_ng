@@ -2320,22 +2320,24 @@ void FP2Component::telnet_task_run_() {
   server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   server_addr.sin_port = htons(telnet_port_);
 
-  telnet_listen_fd_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  // Use lwip-prefixed names to avoid symbol collisions with ESPHome's own
+  // esphome::socket::Socket class and similar wrappers.
+  telnet_listen_fd_ = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (telnet_listen_fd_ < 0) {
     ESP_LOGE(TAG, "Telnet: socket() failed");
     return;
   }
   int yes = 1;
-  setsockopt(telnet_listen_fd_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-  if (bind(telnet_listen_fd_, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
+  lwip_setsockopt(telnet_listen_fd_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+  if (lwip_bind(telnet_listen_fd_, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
     ESP_LOGE(TAG, "Telnet: bind(%u) failed", (unsigned) telnet_port_);
-    close(telnet_listen_fd_);
+    lwip_close(telnet_listen_fd_);
     telnet_listen_fd_ = -1;
     return;
   }
-  if (listen(telnet_listen_fd_, 1) < 0) {
+  if (lwip_listen(telnet_listen_fd_, 1) < 0) {
     ESP_LOGE(TAG, "Telnet: listen() failed");
-    close(telnet_listen_fd_);
+    lwip_close(telnet_listen_fd_);
     telnet_listen_fd_ = -1;
     return;
   }
@@ -2343,7 +2345,7 @@ void FP2Component::telnet_task_run_() {
   while (true) {
     struct sockaddr_in client_addr = {};
     socklen_t addrlen = sizeof(client_addr);
-    int new_fd = accept(telnet_listen_fd_, (struct sockaddr *) &client_addr, &addrlen);
+    int new_fd = lwip_accept(telnet_listen_fd_, (struct sockaddr *) &client_addr, &addrlen);
     if (new_fd < 0) {
       vTaskDelay(pdMS_TO_TICKS(100));
       continue;
@@ -2351,21 +2353,21 @@ void FP2Component::telnet_task_run_() {
     // Only one client at a time — kick any existing client.
     if (telnet_client_fd_ >= 0) {
       const char *bye = "NOTICE new client connected, closing\n";
-      send(telnet_client_fd_, bye, strlen(bye), 0);
-      close(telnet_client_fd_);
+      lwip_send(telnet_client_fd_, bye, strlen(bye), 0);
+      lwip_close(telnet_client_fd_);
     }
     telnet_client_fd_ = new_fd;
     ESP_LOGI(TAG, "Telnet: client connected (fd=%d)", new_fd);
     const char *banner =
         "# FP2 telnet bridge. TX <hex>, MODE RAW|NORMAL, RESET RADAR, "
         "REBOOT ESP, STATUS, HELP\n";
-    send(new_fd, banner, strlen(banner), 0);
+    lwip_send(new_fd, banner, strlen(banner), 0);
 
     // Per-client read loop — parses commands line by line.
     std::string line_buf;
     char recv_buf[256];
     while (true) {
-      ssize_t n = recv(new_fd, recv_buf, sizeof(recv_buf), 0);
+      ssize_t n = lwip_recv(new_fd, recv_buf, sizeof(recv_buf), 0);
       if (n <= 0) {
         ESP_LOGI(TAG, "Telnet: client disconnected");
         break;
@@ -2391,7 +2393,7 @@ void FP2Component::telnet_task_run_() {
 
 void FP2Component::telnet_close_client_() {
   if (telnet_client_fd_ >= 0) {
-    close(telnet_client_fd_);
+    lwip_close(telnet_client_fd_);
     telnet_client_fd_ = -1;
   }
   telnet_raw_mode_ = false;  // failsafe — never leave radio gagged
@@ -2401,7 +2403,7 @@ void FP2Component::telnet_send_line_(const char *line) {
   int fd = telnet_client_fd_;
   if (fd < 0)
     return;
-  ssize_t n = send(fd, line, strlen(line), MSG_DONTWAIT);
+  ssize_t n = lwip_send(fd, line, strlen(line), MSG_DONTWAIT);
   if (n < 0) {
     // Client likely dropped — close and let accept loop pick up new one
     telnet_close_client_();
