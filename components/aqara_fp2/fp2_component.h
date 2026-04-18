@@ -668,6 +668,14 @@ protected:
   uint8_t ota_can_count_{0};
   uint8_t ota_packet_buf_[1029];     // STX + blk + ~blk + 1024 data + CRC16
   bool ota_probe_only_{false};       // Safe test: trigger handshake, send CAN on 'C', abort without writing
+
+  // Background HTTPS-staging task coordination. The HTTP handshake is one
+  // blocking call that can starve the idle task WDT if run on the API task;
+  // we move the whole staging flow to its own FreeRTOS task.
+  volatile bool fw_stage_task_running_{false};
+#ifdef USE_RADAR_FW_HTTP
+  static void fw_stage_task_entry_(void *arg);
+#endif
   uint8_t ota_probe_c_count_{0};     // Sustained 'C' counter — require ≥2 to confirm XMODEM handshake
   uint32_t ota_probe_last_c_millis_{0};
   uint32_t ota_probe_sof_count_{0};  // Count of 0x55 SOF bytes seen — indicates radar still in normal protocol mode

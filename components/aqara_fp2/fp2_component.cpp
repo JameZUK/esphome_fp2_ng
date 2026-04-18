@@ -10,6 +10,8 @@
 #include <vector>
 #include <esp_flash.h>
 #include <esp_partition.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #ifdef USE_RADAR_FW_HTTP
 #include <esp_http_client.h>
 #include <esp_crt_bundle.h>
@@ -1742,6 +1744,34 @@ void FP2RadarOtaProbeButton::press_action() {
   }
 }
 
+#ifdef USE_RADAR_FW_HTTP
+// FreeRTOS task entry point. The download can spend 10+ s inside
+// esp_http_client_open() (TLS handshake + crypto), which starves the
+// idle task if run directly from press_action on the API task. Moving
+// it to its own task lets FreeRTOS keep the idle task watchdog fed
+// while blocking socket I/O naturally yields via lwIP.
+void FP2Component::fw_stage_task_entry_(void *arg) {
+  auto *self = static_cast<FP2Component *>(arg);
+
+  ESP_LOGW(TAG, "=== Firmware staging task started ===");
+  uint32_t existing = self->ota_detect_firmware_size_();
+  if (existing > 0) {
+    ESP_LOGI(TAG, "Stage firmware: valid firmware already on flash (%u bytes). Re-downloading...", existing);
+  }
+
+  if (self->ota_download_firmware_()) {
+    uint32_t size = self->ota_detect_firmware_size_();
+    ESP_LOGW(TAG, "Firmware staged: %u bytes written to flash. Ready for OTA.", size);
+  } else {
+    ESP_LOGE(TAG, "Firmware staging failed");
+  }
+
+  self->fw_stage_task_running_ = false;
+  ESP_LOGI(TAG, "Firmware staging task finished");
+  vTaskDelete(nullptr);
+}
+#endif
+
 void FP2Component::trigger_radar_fw_stage() {
 #ifdef USE_RADAR_FW_HTTP
   if (radar_firmware_url_.empty()) {
@@ -1749,18 +1779,26 @@ void FP2Component::trigger_radar_fw_stage() {
     return;
   }
 
-  // Check if firmware already exists on flash
-  uint32_t existing = ota_detect_firmware_size_();
-  if (existing > 0) {
-    ESP_LOGI(TAG, "Stage firmware: valid firmware already on flash (%u bytes). Re-downloading...", existing);
+  if (fw_stage_task_running_) {
+    ESP_LOGW(TAG, "Stage firmware: download already in progress, ignoring press");
+    return;
   }
 
-  if (ota_download_firmware_()) {
-    uint32_t size = ota_detect_firmware_size_();
-    ESP_LOGW(TAG, "Firmware staged: %u bytes written to flash. Ready for OTA.", size);
-  } else {
-    ESP_LOGE(TAG, "Firmware staging failed");
+  // Spawn a background task so the API task returns immediately and the
+  // TLS handshake / HTTPS read loop doesn't starve the idle task.
+  //   stack=8 KB is enough for mbedTLS + lwIP in a slim caller
+  //   priority=tskIDLE_PRIORITY+1 keeps it below the main loop so
+  //     sensor publishing stays responsive during download
+  fw_stage_task_running_ = true;
+  BaseType_t ok = xTaskCreate(
+      &FP2Component::fw_stage_task_entry_, "fp2_fw_stage", 8192,
+      this, tskIDLE_PRIORITY + 1, nullptr);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "Stage firmware: failed to create download task");
+    fw_stage_task_running_ = false;
+    return;
   }
+  ESP_LOGI(TAG, "Stage firmware: download started in background task");
 #else
   ESP_LOGE(TAG, "Stage firmware: HTTP download not available (radar_firmware_url not configured at build time)");
 #endif
