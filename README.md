@@ -6,7 +6,7 @@ The Aqara FP2 is a remarkable piece of hardware — an ESP32 paired with a TI IW
 
 This project replaces the stock ESP32 firmware with ESPHome, giving you local-only access to everything the radar can do: per-zone presence and motion detection, native people counting, sleep state monitoring with heart rate and respiration, fall detection with configurable overtime alerts, posture tracking (standing/sitting/lying), walking distance, and real-time target position streaming.
 
-Every feature has been validated against both the stock ESP32 firmware and the TI radar firmware through comprehensive Ghidra reverse engineering. The complete UART protocol (50+ SubIDs) is documented, and a custom Lovelace card provides live radar visualisation with zone overlays and posture-aware target tracking.
+Most features have been validated against the stock ESP32 firmware and the three per-mode TI radar firmwares (FW1 Zone / FW2 Fall / FW3 Sleep) through Ghidra reverse engineering, with 50+ SubIDs documented. A custom Lovelace card provides live radar visualisation with zone overlays and posture-aware target tracking. Sleep-monitoring and full-image radar OTA are still in progress — see *Experimental* below and [docs/06-changelog.md](docs/06-changelog.md) for the honest status.
 
 Forked from [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
@@ -24,16 +24,19 @@ Replaces the stock ESP32 firmware on the Aqara FP2 with ESPHome, while keeping t
 
 - **Per-zone people counting** — native radar counting (SubID 0x0175), not position approximation
 - **Global people count** — total detected persons
-- **Sleep monitoring** — heart rate, respiration rate, heart rate deviation
-- **Fall detection** — binary sensor for fall events
+- **Fall detection** — binary sensor on SubID 0x0121 (fires only on ballistic upright→horizontal transitions, not calm lying down)
 - **Posture tracking** — per-zone standing/sitting/lying detection
 - **Walking distance** — cumulative distance sensor
 - **Real-time target tracking** — individual target positions with configurable publish rate
 - **Zone presence and motion** — per-zone binary sensors with presence inference
 - **Factory-calibrated light sensor** — OPT3001 with per-unit NVS calibration
 - **Accelerometer corrections** — factory calibration from NVS
-- **Radar firmware OTA** — XMODEM-1K, verified (swap between FW1 / FW2 / FW3 wirelessly)
 - **Auto-calibration** — room boundary and interference detection buttons
+
+### Experimental / in progress
+
+- **Sleep monitoring (heart rate, respiration)** — protocol decoder landed (HR/BR read from 0x0117 in mode 9, scaled ×100 u16 BE), but the "sleep space intelligent learning" calibration command that Aqara requires before sleep tracking engages has not yet been identified. Until it is, mode-9 sensors stay unpopulated. Heart-rate-deviation is not emitted by stock radar firmware and will never populate.
+- **Radar firmware OTA (XMODEM-1K)** — protocol proven working end-to-end (handshake confirms, blocks transfer at ~720 ms each) but transfers consistently cancel at ~18-22% with radar-emitted CAN bytes. Root cause unknown. Aqara's stock OTA completes in under a minute; the mechanism they use is still being investigated. Safe in that aborted transfers don't corrupt the three pre-installed image slots (commit only happens on successful EOT).
 
 All data stays local. No Aqara cloud dependency.
 

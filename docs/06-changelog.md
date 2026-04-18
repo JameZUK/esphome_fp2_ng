@@ -2,6 +2,140 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
+## 2026-04-18 — Ghidra-verified SubID corrections, architecture clarification, XMODEM OTA hardening
+
+### Critical corrections to prior claims
+
+Several entries below this one contained claims that this session's Ghidra
+work has now **falsified**. The corrections are authoritative — they're
+derived from decompiling the specific binary that actually handles each case,
+not from cross-firmware speculation.
+
+- **Fall detection SubID is `0x0121`, not `0x0306`.** The 2026-04-15 entry
+  claimed `FALL_DETECTION_RESULT = 0x0306` and that `0x0121 = angle sensor`.
+  Both are wrong. Decompile of FW2 MSS (the *fall-detection* firmware —
+  previously never examined) at `FUN_0001db70` shows the emission call
+  `FUN_00011d3c(5, 0x121, 0, &state_byte)` with the adjacent debug string
+  `"fall_detection:%d"`. Payload is uint8: `0=clear, 1=fall type A, 2=fall type B`.
+  The stock ESP dispatch table `0x3ffb13b8` binds `0x0121` →
+  `radar_fall_detection`. No MSS binary (FW1, FW2, FW3) emits `0x0306` at all.
+
+- **Heart rate / respiration arrive on `SubID 0x0117` in mode 9, not floats in
+  `0x0159`.** The 2026-04-15 SLEEP_DATA parser in `fp2_component.cpp` decoded
+  12 bytes of `0x0159` as three IEEE-754 LE floats (`heartRate`, `breathRate`,
+  `heartDev`). That matches TI's reference Vital-Signs debug strings
+  (`"heartRate = %.0f ..."`), but those strings go to a separate debug-UART
+  `printf`, **not** to the 0x55/0x01 protocol framer. Decompile of FW3
+  (vitalsigns) `FUN_00006c84` at the 0x117 emission site shows:
+
+  ```
+  blob[0]    = 1 (fixed header byte)
+  blob[1]    = track_id
+  blob[2..3] = round(HR_bpm     * 100) as uint16 big-endian
+  blob[4..5] = round(BR_per_min * 100) as uint16 big-endian
+  blob[6..14]= zero padding
+  ```
+
+  Scaling constant `100.0f` verified in firmware data (`0x42C80000`).
+  The 0x0159 blob is a parallel 12-byte per-byte metadata struct:
+  `tid / count / motion / sleep_stage / posture / confidence / bed_state /
+  conf2 / ...` — NOT floats. Old parser would have published garbage to the
+  HR/BR sensors if sleep ever engaged. New parser in `fp2_component.cpp`
+  reads 0x117 mode-aware and logs 0x159 bytes verbatim (MEDIUM confidence
+  per-field naming). Heart-rate-deviation is NOT emitted by stock vitalsigns
+  firmware — that sensor will stay unpopulated.
+
+- **The three radar firmware images are NOT "the same firmware with different
+  config"** (as the 2026-04-15 entry claimed). They have genuinely distinct
+  MSS application binaries (type-0x04 RPRC sub-images within each MSTR
+  container). Sizes: FW1 MSS = 228,544 B (Zone, mode 3), FW2 MSS = 142,720 B
+  (Fall, mode 8), FW3 MSS = 210,560 B (Sleep, mode 9). Each has its own
+  dedicated DSP image (types 0x0a/0x0b/0x0d). Only the 247,424 B type-0x0c
+  sub-image (probably TI HSM/security runtime) is byte-identical across all
+  three. Previous Ghidra analysis had only loaded FW1 MSS and FW3 MSS — FW2
+  was never examined, which is why the `0x0121 → fall_detection` mapping
+  remained undiscovered for so long.
+
+- **Ghidra-binary naming**: `fp2_radar_mss.bin` ≈ FW1's RAM image (Zone).
+  `fp2_radar_vitalsigns.bin` ≈ FW3's RAM image (Sleep). FW2's MSS (Fall) was
+  extracted to `analysis/subimages/fp2_radar_mss_fw2.bin` this session and
+  loaded fresh. The 2026-04-16 entry's "`fp2_radar_mss.bin` is misnamed — it
+  is FW1's DSS content" is also wrong — sizes match FW1's combined RAM image
+  (SBL + MSS + shared + DSP), not FW1's DSS alone.
+
+### Code changes landed
+
+- `radar ota: drop ACK gate, send trigger frame one-shot` (`0364734`) — the
+  `0x0127` OTA trigger is fire-and-forget; stock firmware does not wait for a
+  cluster ACK. Prior implementation waited, timed out, and aborted before the
+  XMODEM 'C' handshake ever arrived. Probe test now confirms `'C'` within
+  ~360 ms.
+- `radar ota: flush UART after every xmodem block and EOT` (`4eea6be`) —
+  `write_array()` only pushes into the ESPHome UART ring buffer; without
+  `flush()` the bytes dribble out across many loop iterations and the radar's
+  internal byte-gap timeout fires, triggering NAK/CAN. Adding `flush()` in
+  `ota_send_current_block_()` and `ota_send_eot_()` removed the NAK storms.
+- `radar ota: run xmodem transfer in a dedicated FreeRTOS task` (`c1db4ab`) —
+  previously, the ACK→next-block round-trip ran inside the cooperative
+  ESPHome main loop and got blocked by HA API / telemetry ticks. Moving the
+  transfer into `fp2_ota_xfer` at `tskIDLE_PRIORITY+2` removes that shared
+  scheduling contention.
+- `debug: raw UART trace window on mode switch` (`40b39bb`) — 15 s trace of
+  every TX/RX byte in hex when `set_operating_mode()` fires. Used this session
+  to prove that `WORK_MODE=0x0116` writes DO cause the radar to ACK and soft-
+  reboot into the new mode.
+- `fall detection: fix SubID 0x0306 -> 0x0121` (`a703c9c`) — enum correction
+  plus handler comment update.
+- `vitals: decode HR/BR from SubID 0x0117 in sleep mode` (`dbc03ac`) —
+  `handle_location_tracking_report_` is now mode-aware; in sleep mode it
+  parses the 15-byte blob as vitals instead of target-tracking. SLEEP_DATA
+  parser rewritten for per-byte metadata layout.
+
+### Open questions (honest accounting of what we did NOT solve)
+
+- **Sleep mode produces no events even after all the above fixes.** Aqara's
+  product FAQ (https://www.aqara.com/eu/product/presence-sensor-fp2/faq/)
+  says sleep monitoring requires "sleep space intelligent learning" as a
+  mandatory setup step. Our driver never sends that command. The vitalsigns
+  binary has `"learn complete!!!"` at `0x677c` and accumulator `FUN_00006390`
+  that writes a learned threshold to flash via `FUN_0002cf28`, but the
+  incoming SubID that *initiates* the learning phase is not locatable via
+  static RE — no xrefs to the learning state functions, no stored pointers
+  to the candidate addresses. Dynamic analysis (UART capture during a real
+  Aqara-app sleep-setup flow) is the realistic next step.
+
+- **Fall detection doesn't fire from "lying down" tests.** The fall ML state
+  machine in FW2 MSS (`FUN_000022b8`) requires a ballistic upright→horizontal
+  transition pattern plus low post-impact motion. It will not trigger from
+  calm lying down, sitting, or sleeping. Real-fall validation still pending.
+
+- **Heart-rate / respiration / heart-rate-deviation remain unobtainable in
+  practice** until sleep-space-learning is solved — mode-9 with an
+  un-calibrated zone keeps the presence-count at zero and the sleep task's
+  emission gates never open. Once learning is solved, the 0x0117 decoder
+  landed this session will populate HR/BR automatically.
+
+- **Full radar OTA via XMODEM-1K remains slow and unstable.** The task-based
+  transfer is stable for the first ~18–22 % of the 2,369 blocks, then the
+  radar starts emitting CAN bytes and cancels. Root cause unknown — per-block
+  turnaround of ~720 ms is radar-side, and stock Aqara's OTA is known (from
+  user observation) to complete in under a minute. Speculation about shared
+  QSPI flash, ROM-bootloader, or higher-baud modes was investigated and ruled
+  out by Ghidra; the real mechanism of stock's fast OTA is still not known.
+  For now, users who want to reflash a bricked radar image must persist
+  through multiple cycles (each abort doesn't corrupt working images — the
+  three active slots at `0x100000 / 0x2d2000 / 0x460000` are only overwritten
+  after a successful EOT commit).
+
+### MSTR sub-image extractor (new)
+
+`analysis/subimages/` now contains each FW's type-0x04 RPRC body as a
+separate `fwN_rprcM_type4.bin` file, stripped of the 32-byte RPRC header.
+FW2's was imported into Ghidra for the fall-detection analysis this session.
+The extraction was ad-hoc Python — not yet packaged as a script; future
+work could extend `scripts/extract_radar_firmware.py` with a `--dump-subimages`
+flag.
+
 ## 2026-04-16 — Three Radar Firmware Images Validated, SBL Safety Assessment
 
 ### RE Discoveries (Ghidra-validated)
