@@ -1782,6 +1782,12 @@ void FP2RadarOtaProbeButton::press_action() {
   }
 }
 
+void FP2SleepLearnProbeButton::press_action() {
+  if (this->parent_ != nullptr) {
+    this->parent_->trigger_sleep_learn_probe();
+  }
+}
+
 #ifdef USE_RADAR_FW_HTTP
 // FreeRTOS task entry point. The download can spend 10+ s inside
 // esp_http_client_open() (TLS handshake + crypto), which starves the
@@ -2228,6 +2234,120 @@ void FP2Component::ota_transfer_task_entry_(void *arg) {
   self->ota_state_ = OtaState::DONE;
   self->ota_transfer_task_running_ = false;
   vTaskDelete(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Sleep-learning command brute-force probe
+// ---------------------------------------------------------------------------
+
+void FP2Component::send_probe_write_frame_(uint16_t subid, uint8_t dtype,
+                                            uint8_t value) {
+  // Build and send a single-byte-payload WRITE frame, bypassing the command
+  // queue. Uses a separate seq counter (initial 0xC0) so we can tell probe
+  // TXes apart from the main protocol's TXes in the raw trace.
+  static uint8_t probe_seq = 0xC0;
+
+  std::vector<uint8_t> frame;
+  frame.push_back(0x55);
+  frame.push_back(0x00);
+  frame.push_back(0x01);
+  frame.push_back(probe_seq++);
+  frame.push_back((uint8_t) OpCode::WRITE);
+  frame.push_back(0x00);  // Len Hi
+  frame.push_back(0x04);  // Len Lo (SubID + dtype + value = 4 bytes)
+
+  uint8_t sum = 0;
+  for (int i = 0; i < 7; i++)
+    sum += frame[i];
+  frame.push_back((uint8_t)(~(sum - 1)));
+
+  frame.push_back((subid >> 8) & 0xFF);
+  frame.push_back(subid & 0xFF);
+  frame.push_back(dtype);
+  frame.push_back(value);
+
+  uint16_t crc = crc16(frame.data(), frame.size());
+  frame.push_back(crc & 0xFF);
+  frame.push_back((crc >> 8) & 0xFF);
+
+  write_array(frame);
+  flush();
+}
+
+void FP2Component::trigger_sleep_learn_probe() {
+  if (sleep_learn_probe_running_) {
+    ESP_LOGW(TAG, "Sleep-learn probe: already running, ignoring press");
+    return;
+  }
+  sleep_learn_probe_running_ = true;
+  BaseType_t ok = xTaskCreate(
+      &FP2Component::sleep_learn_probe_task_entry_,
+      "fp2_sleep_probe",
+      4096,
+      this,
+      tskIDLE_PRIORITY + 1,
+      nullptr);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "Sleep-learn probe: failed to spawn task");
+    sleep_learn_probe_running_ = false;
+    return;
+  }
+  ESP_LOGI(TAG, "Sleep-learn probe: task spawned");
+}
+
+void FP2Component::sleep_learn_probe_task_entry_(void *arg) {
+  auto *self = static_cast<FP2Component *>(arg);
+  self->sleep_learn_probe_task_run_();
+  self->sleep_learn_probe_running_ = false;
+  vTaskDelete(nullptr);
+}
+
+void FP2Component::sleep_learn_probe_task_run_() {
+  // Candidate SubIDs to probe. Gaps in the sleep-related 0x01xx range,
+  // skipping anything already known to be emitted or configured by our
+  // driver. If stock Aqara's "sleep space intelligent learning" command
+  // lives in this range, one of these writes should produce observable
+  // behaviour (new SubID responses, radar soft-reset, sleep-sensor
+  // transitions). Each write is BOOL=1 on the theory that the learning
+  // flag is set via a simple enable (matches the auto_edge_setting_on
+  // pattern Ghidra identified).
+  static const uint16_t CANDIDATES[] = {
+    0x0157, 0x0158, 0x015A, 0x015B, 0x015C, 0x015D, 0x015E, 0x015F,
+    0x0160, 0x0162, 0x0163, 0x0164, 0x0165, 0x0166,
+    0x016A, 0x016B, 0x016C, 0x016D, 0x016E, 0x016F, 0x0170,
+    0x0172, 0x0173, 0x0174, 0x0175,
+    0x0179, 0x017A, 0x017B, 0x017C, 0x017D, 0x017E, 0x017F,
+  };
+  const uint32_t N = sizeof(CANDIDATES) / sizeof(CANDIDATES[0]);
+  const uint32_t WAIT_MS = 45000;
+
+  ESP_LOGW(TAG, "=== SLEEP LEARN PROBE: %u candidates x %u s (~%u min) ===",
+           (unsigned) N, (unsigned)(WAIT_MS / 1000),
+           (unsigned)(N * WAIT_MS / 60000));
+  ESP_LOGW(TAG, "Watch for: radar soft-reset (hb=0), new SubID RX frames, "
+                "sleep-sensor state changes, or sustained 'C' bytes.");
+
+  for (uint32_t i = 0; i < N; i++) {
+    uint16_t subid = CANDIDATES[i];
+    ESP_LOGW(TAG, "--- Probe %u/%u: TX op=2 SubID=0x%04X dtype=0x04 val=0x01 ---",
+             (unsigned)(i + 1), (unsigned) N, subid);
+
+    // Reuse the mode-switch trace window — every TX/RX byte during the
+    // observation window gets logged in hex for post-hoc analysis.
+    mode_switch_trace_until_ms_ = millis() + WAIT_MS;
+
+    send_probe_write_frame_(subid, 0x04, 0x01);
+
+    // Sleep the task for WAIT_MS while the radar does whatever it's going
+    // to do. vTaskDelay yields to the main loop so normal protocol parsing
+    // continues and heartbeats / ACKs are logged.
+    uint32_t start = millis();
+    while (millis() - start < WAIT_MS) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
+  }
+
+  ESP_LOGW(TAG, "=== SLEEP LEARN PROBE: complete — review logs for TRACE lines ===");
 }
 
 void FP2Component::ota_transfer_task_run_() {

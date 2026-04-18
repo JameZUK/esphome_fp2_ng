@@ -311,6 +311,15 @@ protected:
   FP2Component *parent_{nullptr};
 };
 
+class FP2SleepLearnProbeButton : public button::Button {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void press_action() override;
+  FP2Component *parent_{nullptr};
+};
+
 class FP2Component : public Component, public uart::UARTDevice {
 public:
   void setup() override;
@@ -408,6 +417,10 @@ public:
     radar_ota_probe_button_ = btn;
     btn->set_parent(this);
   }
+  void set_sleep_learn_probe_button(FP2SleepLearnProbeButton *btn) {
+    sleep_learn_probe_button_ = btn;
+    btn->set_parent(this);
+  }
 
   void trigger_edge_calibration();
   void trigger_interference_calibration();
@@ -417,6 +430,7 @@ public:
   void trigger_radar_ota();
   void trigger_radar_fw_stage();
   void trigger_radar_ota_probe();
+  void trigger_sleep_learn_probe();
   void set_radar_firmware_url(const std::string &url) { radar_firmware_url_ = url; }
   void set_radar_fw_stage_button(FP2RadarFwStageButton *btn) {
     radar_fw_stage_button_ = btn;
@@ -589,6 +603,16 @@ protected:
   FP2RadarOtaButton *radar_ota_button_{nullptr};
   FP2RadarFwStageButton *radar_fw_stage_button_{nullptr};
   FP2RadarOtaProbeButton *radar_ota_probe_button_{nullptr};
+  FP2SleepLearnProbeButton *sleep_learn_probe_button_{nullptr};
+
+  // Sleep-learning command brute-force probe — tries a hard-coded list of
+  // candidate SubIDs to find the one that initiates "sleep space intelligent
+  // learning" per Aqara's FAQ. Runs in a dedicated FreeRTOS task so the
+  // 25-minute sequence doesn't block the main loop.
+  volatile bool sleep_learn_probe_running_{false};
+  static void sleep_learn_probe_task_entry_(void *arg);
+  void sleep_learn_probe_task_run_();
+  void send_probe_write_frame_(uint16_t subid, uint8_t dtype, uint8_t value);
   bool location_reporting_active_{false};
   uint32_t target_tracking_interval_ms_{500};
   uint32_t last_target_publish_millis_{0};
