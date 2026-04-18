@@ -1832,9 +1832,23 @@ uint32_t FP2Component::ota_detect_firmware_size_() {
     return 0;
   }
 
-  // TI IWR6843 firmware starts with "MSTR" (0x4D535452)
+  // TI IWR6843 firmware starts with "MSTR" (0x4D535452).
+  // Distinguish three cases:
+  //   - all 0xFF  -> partition is empty (fresh erase, nothing to stage yet)
+  //   - all 0x00  -> partition was wiped but not erased properly
+  //   - anything else -> garbage / corrupted / wrong file was written
+  bool all_ff = magic[0] == 0xFF && magic[1] == 0xFF && magic[2] == 0xFF && magic[3] == 0xFF;
+  bool all_00 = magic[0] == 0x00 && magic[1] == 0x00 && magic[2] == 0x00 && magic[3] == 0x00;
+  if (all_ff) {
+    ESP_LOGI(TAG, "OTA: mcu_ota partition is empty — no staged firmware");
+    return 0;
+  }
+  if (all_00) {
+    ESP_LOGW(TAG, "OTA: mcu_ota partition is all zeros — needs re-erase before use");
+    return 0;
+  }
   if (magic[0] != 'M' || magic[1] != 'S' || magic[2] != 'T' || magic[3] != 'R') {
-    ESP_LOGE(TAG, "OTA: invalid firmware header (expected MSTR, got %02x %02x %02x %02x)",
+    ESP_LOGE(TAG, "OTA: staged data looks corrupted — expected MSTR header, got %02x %02x %02x %02x. Re-stage to recover.",
              magic[0], magic[1], magic[2], magic[3]);
     return 0;
   }
