@@ -2183,6 +2183,11 @@ void FP2Component::ota_send_current_block_() {
   ota_packet_buf_[1028] = crc & 0xFF;          // CRC low
 
   write_array(ota_packet_buf_, 1029);
+  // flush() blocks until the UART ring buffer has drained onto the wire.
+  // Without this, ESPHome dribbles bytes out over many loop iterations and
+  // the radar's internal XMODEM timeout can fire mid-block, triggering a
+  // NAK or CAN. Observed ~640 ms/block without flush vs ~15 ms expected.
+  flush();
 
   ESP_LOGD(TAG, "OTA: sent block %d (offset %u/%u, %d%%)",
            ota_block_num_, ota_firmware_offset_,
@@ -2193,6 +2198,7 @@ void FP2Component::ota_send_current_block_() {
 void FP2Component::ota_send_eot_() {
   uint8_t eot = 0x04;
   write_array(&eot, 1);
+  flush();
 }
 
 void FP2Component::ota_loop_() {
