@@ -15,6 +15,7 @@
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 #include <esp_system.h>
+#include <esp_netif.h>
 #include <cstring>
 #include <string>
 #ifdef USE_RADAR_FW_HTTP
@@ -2315,6 +2316,20 @@ void FP2Component::telnet_task_entry_(void *arg) {
 }
 
 void FP2Component::telnet_task_run_() {
+  // Wait for the lwip tcpip_thread mutex to be valid before calling
+  // lwip_socket() — otherwise we hit an assertion in sys_mutex_lock and the
+  // whole app panics. The mutex is initialized once esp_netif_init()
+  // completes. Easiest portable check: wait until any netif exists.
+  for (int i = 0; i < 200; i++) {  // up to ~20 s
+    esp_netif_t *any = esp_netif_next_unsafe(nullptr);
+    if (any != nullptr) {
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+  // Extra grace period so WiFi sta has actually started, not just esp_netif.
+  vTaskDelay(pdMS_TO_TICKS(2000));
+
   struct sockaddr_in server_addr = {};
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
