@@ -638,6 +638,23 @@ void FP2Component::check_initialization_() {
     publish_radar_state_("Sleep");
   }
 
+  // Stock ESP's lazy-read sequence: on first cloud-channel activation after
+  // a radar restart, stock issues READs for 0x0102/0x0116/0x0128 if its
+  // cached values are zero (FUN_400ded60/deda4/dedec @ fp2_aqara_fw1.bin).
+  // On a fresh FW3 boot the caches are zero so all three fire. In TI mmwave
+  // SDK protocols, READing a report SubID can register the ESP as a
+  // subscriber for that periodic report — without it, the radar may never
+  // emit 0x0128 temperature, and (hypothesis) the same gating may apply to
+  // the 0x0117 target/vitals stream. Our driver has never issued a READ;
+  // this is the single biggest protocol-level difference vs stock found in
+  // the 2026-04-21 deep-trace agent analysis.
+  //
+  // Send these AFTER all WRITE-based config commands so the radar has its
+  // state set up before we ask for status.
+  enqueue_read_(AttrId::RADAR_SW_VERSION);  // 0x0102
+  enqueue_read_((AttrId) 0x0116);           // WORK_MODE
+  enqueue_read_((AttrId) 0x0128);           // RADAR_TEMPERATURE
+
   ESP_LOGI(TAG, "Init complete: %d commands queued (uptime=%u ms)",
            (int)command_queue_.size(), millis());
 }
@@ -755,6 +772,19 @@ void FP2Component::send_ack_(AttrId attr_id) {
 
   // ACKs are high priority - push to front of queue
   command_queue_.push_front(cmd);
+}
+
+void FP2Component::enqueue_read_(AttrId attr_id) {
+  FP2Command cmd;
+  cmd.type = OpCode::READ;  // opcode = 1
+  cmd.attr_id = attr_id;
+  cmd.retry_count = 0;
+
+  // READ payload is just [SubID_HI][SubID_LO] — no data-type, no data.
+  cmd.data.push_back((((uint16_t) attr_id) >> 8) & 0xFF);
+  cmd.data.push_back(((uint16_t) attr_id) & 0xFF);
+
+  command_queue_.push_back(cmd);
 }
 
 void FP2Component::send_reverse_response_(AttrId attr_id, uint8_t byte_val) {
