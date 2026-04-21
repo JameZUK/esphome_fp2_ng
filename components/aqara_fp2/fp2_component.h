@@ -707,6 +707,7 @@ protected:
 
   void enqueue_command_(OpCode type, AttrId attr_id, uint8_t byte_val);
   void enqueue_command_(OpCode type, AttrId attr_id, uint16_t word_val);
+  void enqueue_command_(OpCode type, AttrId attr_id, uint32_t dword_val);
   void enqueue_command_(OpCode type, AttrId attr_id, bool bool_val);
   void enqueue_command_blob2_(AttrId attr_id,
                               const std::vector<uint8_t> &blob_content);

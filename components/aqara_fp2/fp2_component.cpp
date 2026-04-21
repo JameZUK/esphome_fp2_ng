@@ -219,13 +219,11 @@ void FP2Component::set_operating_mode(const std::string &mode) {
       enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) sleep_mount_position_);
     }
     if (sleep_zone_size_ > 0) {
-      std::vector<uint8_t> szs = {
-        (uint8_t)((sleep_zone_size_ >> 24) & 0xFF),
-        (uint8_t)((sleep_zone_size_ >> 16) & 0xFF),
-        (uint8_t)((sleep_zone_size_ >> 8) & 0xFF),
-        (uint8_t)(sleep_zone_size_ & 0xFF)
-      };
-      enqueue_command_blob2_(AttrId::SLEEP_ZONE_SIZE, szs);
+      // UINT32 (type 0x02), not BLOB2 — stock cloud handler
+      // FUN_400e247c writes as U32. BLOB2 (type 0x06) has a different
+      // wire format the radar's attribute dispatcher may not route to the
+      // same handler.
+      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_ZONE_SIZE, sleep_zone_size_);
     }
     if (sleep_bed_height_ > 0) {
       enqueue_command_(OpCode::WRITE, AttrId::SLEEP_BED_HEIGHT, sleep_bed_height_);
@@ -250,8 +248,11 @@ void FP2Component::set_operating_mode(const std::string &mode) {
   // running causes FW1 to flash-save byte[4]=1, and the next radar boot
   // loads FW3. Sending value 9 via this SubID is not what stock does and
   // causes the radar to reject/clamp it.
-  uint8_t sleep_flag = sleep ? 1 : 0;
-  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep_flag);
+  // Must encode as BOOL (data_type 0x04), not UINT8 (0x00). Stock's cloud
+  // handler writes this with data_type 4 (FUN_400e28f0 @ 0x400e2a0b sets
+  // uStack_36 = 4 before FUN_400e7e20 frame-build). Sending as UINT8 gets
+  // rejected by the radar's attribute dispatcher with a type mismatch.
+  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep);  // BOOL
   // WORK_MODE write triggers flash save + radar self-restart
   enqueue_command_(OpCode::WRITE, (AttrId) 0x0116, scene_mode);
 
@@ -447,7 +448,9 @@ void FP2Component::check_initialization_() {
     // Location reporting must stay enabled at the radar level — people counting
     // depends on it internally. The Report Targets switch controls whether
     // target data is published to the text sensor, not whether the radar tracks.
-    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, (uint8_t) 1);
+    // BOOL (type 0x04), not UINT8 — matches stock cloud handler at
+    // FUN_400e4e7c which sets uStack_36=4. Sending as UINT8 gets rejected.
+    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, true);  // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
     enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t)(dwell_time_enable_ ? 1 : 0));
     enqueue_command_(OpCode::WRITE, AttrId::WALK_DISTANCE_ENABLE,
@@ -1666,6 +1669,25 @@ void FP2Component::enqueue_command_(OpCode type, AttrId attr_id,
   cmd.data.push_back(0x01); // UINT16
   cmd.data.push_back((word_val >> 8) & 0xFF);
   cmd.data.push_back(word_val & 0xFF);
+
+  command_queue_.push_back(cmd);
+}
+
+void FP2Component::enqueue_command_(OpCode type, AttrId attr_id,
+                                    uint32_t dword_val) {
+  FP2Command cmd;
+  cmd.type = type;
+  cmd.attr_id = attr_id;
+  cmd.retry_count = 0;
+
+  // Payload: [SubID 2] [Type 1 (0x02 UINT32)] [Data 4 BE]
+  cmd.data.push_back((((uint16_t) attr_id) >> 8) & 0xFF);
+  cmd.data.push_back(((uint16_t) attr_id) & 0xFF);
+  cmd.data.push_back(0x02); // UINT32
+  cmd.data.push_back((dword_val >> 24) & 0xFF);
+  cmd.data.push_back((dword_val >> 16) & 0xFF);
+  cmd.data.push_back((dword_val >> 8) & 0xFF);
+  cmd.data.push_back(dword_val & 0xFF);
 
   command_queue_.push_back(cmd);
 }
