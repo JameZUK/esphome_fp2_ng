@@ -654,6 +654,12 @@ void FP2Component::check_initialization_() {
   enqueue_read_(AttrId::RADAR_SW_VERSION);  // 0x0102
   enqueue_read_((AttrId) 0x0116);           // WORK_MODE
   enqueue_read_((AttrId) 0x0128);           // RADAR_TEMPERATURE
+  // Diagnostic readbacks of critical gating bytes. Log lines [READBACK]
+  // will show the actual value the radar has stored — lets us verify that
+  // our WRITEs for these landed and the emit gate is open. If 0x0112 reads
+  // back 0, the LOCATION_REPORT_ENABLE WRITE was rejected or not routed.
+  enqueue_read_((AttrId) 0x0112);           // LOCATION_REPORT_ENABLE (emit gate)
+  enqueue_read_((AttrId) 0x0156);           // SLEEP_REPORT_ENABLE
 
   ESP_LOGI(TAG, "Init complete: %d commands queued (uptime=%u ms)",
            (int)command_queue_.size(), millis());
@@ -910,6 +916,27 @@ void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
       break;
     case OpCode::RESPONSE:
       handle_response_(attr_id, payload);
+      break;
+    case OpCode::READ:
+      // Wire opcode 0x04 = radar's response to our opcode-0x01 READ request.
+      // Payload: [SubID 2B][dtype 1B][value N bytes].
+      // Log the read-back value as a diagnostic so we can verify what the
+      // radar actually has in its config for critical bytes like
+      // LOCATION_REPORT_ENABLE (0x0112) and SLEEP_REPORT_ENABLE (0x0156).
+      if (payload.size() >= 4) {
+        uint8_t dtype = payload[2];
+        std::string val_str;
+        char buf[16];
+        for (size_t i = 3; i < payload.size() && i < 11; i++) {
+          snprintf(buf, sizeof(buf), "%02X ", payload[i]);
+          val_str += buf;
+        }
+        ESP_LOGI(TAG, "[READBACK] SubID=0x%04X dtype=0x%02X value=[ %s]",
+                 (uint16_t) attr_id, dtype, val_str.c_str());
+      } else {
+        ESP_LOGW(TAG, "[READBACK] SubID=0x%04X short payload (len=%d)",
+                 (uint16_t) attr_id, (int) payload.size());
+      }
       break;
     default:
       ESP_LOGW(TAG, "Unhandled OpCode: %d", type);
