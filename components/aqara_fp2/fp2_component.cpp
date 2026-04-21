@@ -233,6 +233,16 @@ void FP2Component::set_operating_mode(const std::string &mode) {
     }
   }
 
+  // LOCATION_REPORT_ENABLE=1 opens FW3's +0xb8 emit gate for SubID 0x0117
+  // (HR/BR payload). With emulate_stock=true the init burst no longer sets
+  // this, so we must set it explicitly before WORK_MODE=9 triggers the
+  // flash save. Without it, FW3 boots with +0xb8=0 and 0x0117 never emits —
+  // the driver's HR/BR sensors stay NAN even though 0x0159 sleep-staging
+  // frames (which aren't gated on +0xb8) do arrive.
+  if (sleep) {
+    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, true);  // BOOL
+  }
+
   // Write sleep enable flag to radar RAM.
   //
   // 2026-04-21 CORRECTION (supersedes earlier "value=9" comment):
