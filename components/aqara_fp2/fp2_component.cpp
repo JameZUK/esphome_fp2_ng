@@ -1000,6 +1000,14 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       if (sleep_mode_active_ && init_done_) {
         enqueue_command_(OpCode::WRITE, (AttrId) 0x0203,
                          (uint8_t) zone_config_sync_counter_++);
+        // Periodic READ probe for diagnostic: every 30 heartbeats (~30s)
+        // read back LOCATION_REPORT_ENABLE (0x0112) and SLEEP_REPORT_ENABLE
+        // (0x0156) so the [READBACK] log lines appear in any log capture
+        // window, not just during the init burst. Low overhead.
+        if ((zone_config_sync_counter_ % 30) == 0) {
+          enqueue_read_((AttrId) 0x0112);
+          enqueue_read_((AttrId) 0x0156);
+        }
       }
 
       if (payload.size() >= 4) {
