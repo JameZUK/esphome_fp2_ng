@@ -237,23 +237,20 @@ void FP2Component::set_operating_mode(const std::string &mode) {
 
   // Write sleep enable flag to radar RAM.
   //
-  // CRITICAL: value must be 9 (not 1) to trigger FW3 boot!
+  // 2026-04-21 CORRECTION (supersedes earlier "value=9" comment):
+  // The stock Aqara ESP32 firmware validates SLEEP_REPORT_ENABLE <2 before
+  // sending to the radar (verified via Ghidra decompile of the cloud-write
+  // handler at fp2_aqara_fw1.bin FUN_400e3399 @ 0x400e3751). Only 0 or 1 are
+  // accepted. And the stock heartbeat sync gate at `radar_sw_version`
+  // (0x400e4f28) compares `sleep_report_enable == 1` — meaning it uses this
+  // flag as a bool, not as a sentinel value 9.
   //
-  // The WORK_MODE handler (FUN_00016e18) copies config+0xb6c into boot
-  // params byte[4] before the radar restart. The SBL (FUN_000007d8) then
-  // selects the firmware image from boot params:
-  //   byte[2] == 1  OR  byte[4] == 9   →  FW3 (vitalsigns)
-  //   byte[2] == 8                     →  FW2 (3d_people_counting)
-  //   else                              →  FW1 (zone detection)
-  //
-  // Writing SLEEP_REPORT_ENABLE as bool true (= 1) puts byte[4]=1, which
-  // matches NONE of the FW3 conditions, so the SBL falls through to the
-  // default and loads FW1. That's why earlier tests showed 0x0117 frames
-  // carrying tracking data (FW1 format) instead of HR/BR (FW3 format).
-  //
-  // Writing the value 9 puts byte[4]=9 which is the sentinel the SBL checks
-  // for FW3. This is what the stock Aqara app does.
-  uint8_t sleep_flag = sleep ? 9 : 0;
+  // The SBL firmware selector does accept `byte[4] == 1` as a FW3 trigger
+  // alongside `byte[2] == 9`, so sending SLEEP_REPORT_ENABLE=1 while FW1 is
+  // running causes FW1 to flash-save byte[4]=1, and the next radar boot
+  // loads FW3. Sending value 9 via this SubID is not what stock does and
+  // causes the radar to reject/clamp it.
+  uint8_t sleep_flag = sleep ? 1 : 0;
   enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep_flag);
   // WORK_MODE write triggers flash save + radar self-restart
   enqueue_command_(OpCode::WRITE, (AttrId) 0x0116, scene_mode);
@@ -939,6 +936,25 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                  millis(), init_done_, radar_ready_);
       }
       last_heartbeat_millis_ = millis();
+
+      // Heartbeat-driven config sync for sleep mode.
+      //
+      // Stock ESP32 fires WRITE 0x0203 on every incoming radar heartbeat
+      // (0x0102) when sleep_report_enable==1 OR work_mode==9, per
+      // radar_sw_version @ 0x400e4f28 + heartbeat_config_sync @ 0x400decd4
+      // in fp2_aqara_fw1.bin. The payload is a u8 config-version counter
+      // from persistent NVS (Ram400d0e2c+0x257). Missing this keep-alive
+      // appears to leave the radar's sleep state machine stuck after
+      // WORK_MODE=9 — the radar accepts config but never kicks the DSS
+      // pipeline into data-emitting mode.
+      //
+      // The counter value doesn't seem to matter to the radar (it just
+      // needs to see the write). We use a simple incrementing byte.
+      if (sleep_mode_active_ && init_done_) {
+        enqueue_command_(OpCode::WRITE, (AttrId) 0x0203,
+                         (uint8_t) zone_config_sync_counter_++);
+      }
+
       if (payload.size() >= 4) {
         if (payload[2] == 0x00) {
           // Version byte is a build number (e.g. 99 = latest known fw)

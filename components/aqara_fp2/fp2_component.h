@@ -608,6 +608,10 @@ protected:
   FP2LocationSwitch *location_report_switch_{nullptr};
   FP2OperatingModeSelect *operating_mode_select_{nullptr};
   bool sleep_mode_active_{false};
+  // Incrementing u8 counter sent as the value of WRITE 0x0203 on every
+  // heartbeat while in sleep mode. Mirrors stock ESP32 behavior at
+  // heartbeat_config_sync (fp2_aqara_fw1.bin @ 0x400decd4).
+  uint8_t zone_config_sync_counter_{0};
   ESPPreferenceObject operating_mode_pref_;
   bool operating_mode_published_{false};
   FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};

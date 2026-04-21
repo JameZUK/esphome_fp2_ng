@@ -2,6 +2,180 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
+## 2026-04-21 — Sleep Monitoring fix: SLEEP_REPORT_ENABLE=1, heartbeat 0x0203 sync
+
+### Actual root cause found via stock ESP32 firmware diff
+
+After two false hypotheses (row-noise self-cal, then GTrack velocity gate —
+both rabbit holes chasing problems in the RADAR firmware), the real cause was
+in the ESP32 ↔ radar protocol. Aqara's **radar firmware is a known-good
+production input**; the gap was in what our ESPHome driver sends to it vs
+what Aqara's stock ESP32 sends.
+
+Disassembling `fp2_aqara_fw1.bin` (stock ESP32, Xtensa) against our driver's
+sleep-mode-transition command sequence revealed two concrete differences:
+
+1. **`SLEEP_REPORT_ENABLE (SubID 0x0156)` must be `1`, not `9`.** Stock cloud
+   handler at `FUN_400e3399 @ 0x400e3751` rejects any value ≥ 2 (verified
+   disassembly: `bltui a10, 0x2, …`). And the stock heartbeat-sync gate at
+   `radar_sw_version @ 0x400e4f28` compares the stored flag `== 1`, not
+   `== 9`. The SBL firmware selector DOES accept `byte[4] == 1` as a FW3
+   trigger — so sending value 1 is both what stock does AND what routes to
+   FW3 boot. Our previous "=9" was based on a misreading of the SBL selector
+   (which also accepts `byte[2] == 9` as a second FW3 condition — and that's
+   the path that fires when we write `WORK_MODE = 9`, which is orthogonal).
+
+2. **Heartbeat-driven `WRITE 0x0203` was one-shot, should be per-heartbeat.**
+   Stock's `heartbeat_config_sync @ 0x400decd4` fires on every incoming
+   radar heartbeat (0x0102) whenever sleep_report_enable==1 OR work_mode==9.
+   Our driver was sending 0x0203 only once at init and never again. Without
+   this periodic keep-alive, the radar's sleep state machine appears to
+   stall. The payload is a u8 counter — stock reads it from persistent NVS
+   (config-version counter); our driver uses a simple incrementing u8.
+
+### Previous hypotheses (now superseded, preserved for history)
+
+**GTrack velocity allocation gate (2026-04-21 afternoon)**: hypothesized that
+GTrack's `velocityThre=0.1 m/s` in `allocationParam` blocked track creation
+for motionless sleepers. Confirmed the gate exists in TI SDK source
+(`gtrack_module.c:190-192`), but empirical testing (user moved into bed
+during mode transition) didn't unlock vitals — so the gate isn't reachable
+from our driver's command sequence anyway, because the radar's data pipeline
+never starts emitting. The missing `WRITE 0x0203` keep-alive is upstream of
+GTrack.
+
+**Row-noise self-calibration (2026-04-21 morning)**: hypothesized that FW3
+DSS's noise floor calibration baked the sleeper into background. Turned out
+to be from an older ancestor codepath (`oddemo_heatmap`, `mmVital-Signs`
+demo) that Aqara's FW3 doesn't use. Aqara's DSS uses `capon3d_vitalsigns`
+with dual CFAR, which has no equivalent self-cal trap.
+
+### Code changes
+
+- `components/aqara_fp2/fp2_component.cpp`:
+  - `set_operating_mode`: `SLEEP_REPORT_ENABLE` value `9` → `1`; comment
+    block rewritten to explain stock's cloud-handler validation and the
+    heartbeat gate
+  - `handle_parsed_frame_` (RADAR_SW_VERSION/0x0102 heartbeat case): when
+    `sleep_mode_active_ && init_done_`, enqueue `WRITE 0x0203 = counter++`
+    to mirror stock's `heartbeat_config_sync`
+- `components/aqara_fp2/fp2_component.h`: added `zone_config_sync_counter_`
+
+### RE notes added to 07-firmware-analysis.md
+
+Added the stock ESP32 cloud-handler table (SubID → handler addr → dtype →
+clamp), the heartbeat-sync gate logic, and function addresses for
+reproducibility.
+
+## 2026-04-21 (earlier) — FW3 silent-all-night cause found: GTrack velocity allocation gate
+
+### Initial hypothesis (2026-04-21 morning): row-noise self-calibration — WRONG
+
+First hypothesis: FW3's DSS averages its noise floor over the first ~64 frames
+and subtracts it forever, baking an already-present sleeper into background.
+This was based on reading the `oddemo_heatmap` code from a public mmVital-Signs
+ancestor. Empirical test (user applied the "clear FOV then switch mode"
+workflow) did NOT restore vitals — so the hypothesis was wrong.
+
+### Correct root cause (2026-04-21 afternoon): GTrack allocation velocity gate
+
+Deeper string extraction from `fp2_radar_vitalsigns.bin` revealed Aqara uses
+the **capon3d_vitalsigns** (not oddemo_heatmap) DPC, plus TI's full **GTrack
+group tracker** (`src/gtrack_module.c` in the MSS binary). Hard-coded CLI
+defaults in the MSS include:
+
+```
+allocationParam 20 100 0.1 10 0.5 20
+# snrThre=20, snrThrObscured=100, velocityThre=0.1, pointsThre=10, maxDistThre=0.5, maxVelThre=20
+```
+
+TI's `gtrack_moduleAllocate()` (verified in mmwave_sdk_01_02_00_05 source,
+line 190-192) requires three conditions to allocate a new track:
+
+```c
+if (allocNum > pointsThre           // >10 points in cluster
+ && allocSNR > snrThre               // cluster SNR sum > 20
+ && fabs(un[2]) > velocityThre)     // |centroid velocity| > 0.1 m/s
+```
+
+**A sleeping person has radial velocity ≈ 0** (chest motion is sub-mm per
+frame; bulk Doppler is 0). The cluster velocity fails the 0.1 m/s gate.
+**No track is ever allocated**, `numCurrentTargets` stays 0 in the
+`VS_Data_MSS2DSS` shared struct, and the 0x0117 emit gate
+(`target_count != 0` inside FW3 MSS `FUN_00006c84`) suppresses all output.
+
+Once a track IS allocated (via gross motion), `stateParam 2 50 50 900 50 9000`
+keeps it alive via long timers: `static2free=900` frames (~45s) and
+`sleep2free=9000` frames (~7.5 min). So the sleeper can lie still for the
+whole night once tracked.
+
+### Documentation: Operating Modes and Sleep Monitoring
+
+Added [04-esphome-component.md](04-esphome-component.md) "Operating Modes"
+section documenting scene_mode ↔ firmware mapping and the sleep-mode workflow
+requirement (get out of bed → switch mode → wait for restart → **move as you
+get into bed** so the tracker allocates). Once allocated the track persists
+through the static2free/sleep2free timers.
+
+### Documentation: Operating Modes and Sleep Monitoring
+
+Added [04-esphome-component.md](04-esphome-component.md) "Operating Modes"
+section documenting scene_mode ↔ firmware mapping and the sleep-mode workflow
+requirement (cycle mode with empty FOV, wait ≥5s, then enter the bed). Heart
+Rate / Respiration sensors then take another ~15-30s to converge as FFT
+buffers fill.
+
+### RE corrections
+
+- **SLEEP_REPORT_ENABLE (0x0156) WRITE is a no-op in FW3.** The dispatcher
+  `FUN_00009e80` routes 0x0156 WRITE to `FUN_0001fbf8`, which only reads flash
+  params and logs them — it does not write any config field. Prior notes that
+  speculated writing 0x0156=9 activates FW3 were wrong. FW3 is activated
+  exclusively via `WORK_MODE=9` (SubID 0x0116) which writes `scene_mode` to
+  SBL byte[2]. The driver's `SLEEP_REPORT_ENABLE=9` write is decorative.
+- **SBL firmware-selection condition corrected**: `sleep_enable == 1`
+  (not 9) OR `work_mode == 9`. Only the `work_mode` branch is reachable in
+  practice; nothing in FW3 ever writes `config+0xb6c` (source of SBL byte[4])
+  to non-zero.
+- **SubID map corrections verified via decompile**: 0x0178 → OVERHEAD_HEIGHT
+  (writes `+0xbb0`), 0x0177 → SLEEP_BED_HEIGHT (writes `+0xb92`), 0x0173
+  writes `+0xba1` (unknown semantics, not OVERHEAD_HEIGHT as prior notes
+  claimed). Driver's `AttrId` enum values are correct.
+- **FALL_SENSITIVITY=1 (SubID 0x0122) activates bed-region geometry gate**
+  via `FUN_0002dca8` which tests `config+0x510==1 OR (+0x510==2 AND
+  +0x5b8 ∈ {4,7})`. Driver already sends this at init.
+- **Emit rate limiter corrected**: the counter at `config+0x28` inside
+  `FUN_00006c84` is a rate limiter, not a stabilization window. Resets only
+  on successful emit, not on target loss. First emit after target reappears
+  is immediate; subsequent emits at ~16-frame cadence.
+
+### FW3 architecture
+
+- `fp2_radar_vitalsigns.bin` is the MSS slice only; full FW3 packaged as three
+  RPRC subimages: `fw3_rprc0_type4.bin` (MSS, 210KB), `fw3_rprc1_typec.bin`
+  (DSS_DATA shared blob, 247KB — identical across FW1/FW2/FW3),
+  `fw3_rprc2_typed.bin` (DSS_APP vital-signs C674x code, 262KB).
+- Public TI-ancestor sources cloned to `/tmp/vital_signs_people_tracking/`
+  for reference (exact `Vital_Signs_With_People_Tracking` is TI-proprietary
+  binary-only; `multiple-person-vital-signs/` has the closest algorithmic
+  lineage).
+
+### Updated files
+
+- `docs/04-esphome-component.md`: added Operating Modes section with the
+  Sleep Monitoring workflow; corrected sleep-sensor SubID table.
+- `docs/07-firmware-analysis.md`: corrected SBL firmware-selection logic;
+  added "Completed: FW3 MSS + DSS — Vital Signs Activation and Row-Noise
+  Trap" section; fixed SubID data-format table.
+- `docs/02-uart-protocol.md`: SubID OVERHEAD_HEIGHT / SLEEP_BED_HEIGHT
+  corrections.
+- `/config/esphome/fp2.yaml`: added comment block explaining the Sleep
+  Monitoring workflow requirement.
+- `components/aqara_fp2/fp2_component.cpp`: no code changes today; current
+  commits (d8944c0 scene_mode=9 + vitals decoder, 7eabaab debug dump, d6225d6
+  SLEEP_REPORT_ENABLE=9) remain correct as-is. SLEEP_REPORT_ENABLE=9 write
+  is now known to be a no-op but is kept for cloud-symmetry.
+
 ## 2026-04-18 — Ghidra-verified SubID corrections, architecture clarification, XMODEM OTA hardening
 
 ### Critical corrections to prior claims

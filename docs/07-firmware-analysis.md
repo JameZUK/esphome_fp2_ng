@@ -257,7 +257,7 @@ all CRC32-verified, structurally validated via Ghidra.
 | FW1 DSS | 0x012000 | 683KB | 0xD8B3A3AA ✓ | Zone detection, people counting |
 | FW2 MSS | 0x0C0000 | 65KB | 0x8EDF2D7A ✓ | SBL boot loader (no work mode offset) |
 | FW2 DSS | 0x0D2000 | 576KB | 0xD83C969D ✓ | Fall detection with DSP scoring |
-| FW3 | 0x1A0000 | 678KB | 0xA579DCB8 ✓ | Vital signs (standalone, no SBL) |
+| FW3 | 0x1A0000 | 678KB | 0xA579DCB8 ✓ | Vital signs (MSS + DSS + BSS; SBL on radar boot ROM) |
 
 **Naming correction:** `fp2_radar_mss.bin` in `/ghidra-binaries/` is actually FW1's
 DSS content (offset 0x0120B0 in mcu_ota), not the MSS boot loader. All Ghidra
@@ -281,12 +281,12 @@ compatible boot loader already on radar QSPI flash.
 | Byte | Field | Description |
 |------|-------|-------------|
 | 0 | Magic | 0xAA (valid config marker) |
-| 2 | `SBL_WORK_MODE_OFFSET` | Work mode: 8=fall detection, other=zone |
-| 4 | `SBL_SLEEP_ENABLE_OFFSET` | Sleep enable: 9=sleep monitoring |
+| 2 | `SBL_WORK_MODE_OFFSET` | Work mode: 3=zone, 8=fall, 9=sleep |
+| 4 | `SBL_SLEEP_ENABLE_OFFSET` | Sleep enable flag (0 or 1). **Dead code in practice** — FW3 never writes config+0xb6c to a non-zero value, so this stays 0 permanently. FW3 activation routes exclusively through byte[2]=9. |
 | 5 | `SBL_OTA_VERIFY_OFFSET` | OTA pending flag: 1=new firmware waiting |
 | 15 | End marker | 0x55 |
 
-**Firmware selection logic** (decompiled from FUN_000007d8):
+**Firmware selection logic** (decompiled from FUN_000007d8 in `fp2_sbl.bin`):
 
 ```
 1. Read boot params from QSPI + 0x030000
@@ -294,8 +294,8 @@ compatible boot loader already on radar QSPI flash.
      Verify OTA image at QSPI + 0x510000 (FUN_0000a6b0)
      If verify fails → load BACKUP from QSPI + 0x040000
      If verify passes → fall through to normal selection
-3. Normal selection (FUN_0000a038 reads byte[4], FUN_0000a0bc reads byte[2]):
-     If work_mode == 1 OR sleep_enable == 9:
+3. Normal selection (FUN_0000a038 reads byte[4]=sleep_enable, FUN_0000a0bc reads byte[2]=work_mode):
+     If sleep_enable == 1 OR work_mode == 9:
        → Load from QSPI + 0x460000  (FW3 vital signs)
        → Backup at QSPI + 0x040000
      Elif work_mode == 8:
@@ -306,6 +306,15 @@ compatible boot loader already on radar QSPI flash.
        → Backup at QSPI + 0x040000
 4. If load fails → fall back to backup address
 ```
+
+**Only `work_mode == 9` triggers FW3 in practice.** The `sleep_enable == 1`
+branch exists in the SBL but is effectively dead code on this device: scanning
+the FW3 MSS binary for stores to `config+0xb6c` (the source of SBL byte[4])
+finds only cold-init zeroing and WORK_MODE-handler clearing — no writer ever
+sets it to a non-zero value. The stock Aqara app appears to write
+`SLEEP_REPORT_ENABLE` (SubID 0x0156) with value 9 for cloud-symmetry, but in
+FW3 the dispatcher routes that WRITE to a logger-only handler (FUN_0001fbf8),
+so it never reaches any config field.
 
 ### Radar QSPI Flash Layout (Ghidra-confirmed)
 
@@ -507,11 +516,12 @@ decompiled TI IWR6843 radar firmware (`fp2_radar_mss.bin` = FW1 DSS, ARM:LE:32:v
 | 0x0165 | ONTIME_PEOPLE_NUMBER | `FUN_0001f360` | UINT32 (uint16 zero-ext) | **YES** |
 | 0x0121 | FALL_DETECTION | **NOT FOUND** | Not sent by radar | **ISSUE** |
 | 0x0154 | TARGET_POSTURE | `FUN_000229d0` | UINT16 [zone_id, posture] | **YES** |
-| 0x0159 | SLEEP_DATA | `FUN_00006c84` (vs) | BLOB2: 3× LE float (12 bytes) | **YES** |
-| 0x0161 | SLEEP_STATE | `FUN_00026fcc` | UINT8 (0=awake, 1=light, 2=deep only) | **YES** |
-| 0x0167 | SLEEP_PRESENCE | `FUN_00026a58` | UINT8 strictly 0/1 | **YES** |
-| 0x0171 | SLEEP_IN_OUT | `FUN_0002df1c` (vs) | UINT8 (0=exit, 1=enter) | **YES** |
-| 0x0176 | SLEEP_EVENT | `FUN_0002cf68` (vs) | UINT8 (1=light, 2=deep transition) | **YES** |
+| 0x0159 | (unknown) | — | **Not emitted by FUN_00006c84** — prior note was wrong. 0x0159 may be emitted elsewhere in FW3 but hasn't been traced to a specific emit site. Our older SLEEP_DATA float decoder was based on TI reference debug strings and was never confirmed on the wire. | **NO** |
+| 0x0117 | HR/BR (FW3 only) | `FUN_00006c84` | 14-byte per-target: `[count=1][track_id][HR×100 u16 BE][BR×100 u16 BE][zeros]` | **YES** (2026-04-21) |
+| 0x0161 | SLEEP_STATE | `FUN_00026fcc` | UINT8 (0=awake, 1=light, 2=deep only) | partial |
+| 0x0167 | SLEEP_PRESENCE | `FUN_00026a58` | UINT8 strictly 0/1 | partial |
+| 0x0171 | SLEEP_IN_OUT | `FUN_0002df1c` (vs) | UINT8 (0=exit, 1=enter) | partial |
+| 0x0176 | SLEEP_EVENT | `FUN_0002cf68` (vs) | UINT8 (1=light, 2=deep transition) | partial |
 
 Key findings from validation:
 - **0x0121 is ANGLE_SENSOR_REV, not fall detection** — dispatch table confirmed.
@@ -603,6 +613,239 @@ boot are discarded as warmup.
 - All values in centilux (1/100 lux). Our OPT3001 driver currently
   reports in lux, so divide the calibrated centilux by 100.
 - The factory NVS is preserved across ESPHome flashing (different partition)
+
+### Completed: FW3 MSS + DSS — Vital Signs Activation and Row-Noise Trap
+
+**Status: FULLY MAPPED (2026-04-21)** — supersedes earlier notes that
+hypothesized FW3 was abandoned or required binary patches.
+
+#### FW3 MSS emit pipeline (Ghidra, `fp2_radar_vitalsigns.bin`)
+
+`FUN_00006c84` is the 0x0117 emitter. It is called from `FUN_0002ad1c` (a task
+loop that pends on an IPC semaphore from the DSS). Three gates in series must
+all pass:
+
+1. `config+0xb8 == 1` — LOCATION_REPORT_ENABLE gate. Set by the 0x0112 WRITE
+   handler at 0x2c9c8. The driver sends this during init.
+2. `*(DAT_00006f60 + 0x28) > 15` — rate limiter. This counter increments every
+   frame and resets only on successful emit. Not a stabilization window;
+   caps emissions at ≈one per 16 frames (≈800ms at 20Hz).
+3. `target_count != 0` — the DSS-reported target count, passed as param_9.
+   Read from shared-memory byte at `0x0802ba6c - 0x48`. This is the critical
+   gate for vital-signs operation.
+
+When all three pass, the emitter writes a 14-byte per-target block to
+`*(config+0x500)` at offsets 0..13:
+
+| Offset | Field | Encoding |
+|--------|-------|----------|
+| 0 | count | 1 (fixed) |
+| 1 | track_id | u8 |
+| 2-3 | HR × 100 | u16 big-endian |
+| 4-5 | BR × 100 | u16 big-endian |
+| 6-13 | zero | padding |
+
+Payload is sent as 0x0117 REPORT (opcode 5). Driver must decode 0x0117 as
+vitals in FW3 and as X/Y tracking in FW1/FW2 — same SubID, different layout.
+
+#### FW3 WRITE dispatcher map
+
+`FUN_00009e80` routes WRITE SubIDs to per-attribute handlers. Verified 2026-04-21:
+
+| SubID | Handler | Writes | Type | Notes |
+|-------|---------|--------|------|-------|
+| 0x0112 | `location_report_enable_handler` @ 0x2c9c8 | `+0xb8` | u8 | Opens HR/BR emit gate |
+| 0x0116 | `FUN_00016e18` | SBL boot params in flash | — | Triggers flash save + radar restart |
+| 0x0122 | `FUN_0002a830` | `+0x510` | u8 | FALL_SENSITIVITY — when 1, activates bed-region geometry via FUN_0002dca8 |
+| 0x0143 | `FUN_0002d068` | `+0x5b8` | u8 | Alt activator for bed-region geometry (values 4,7 with +0x510==2) |
+| 0x0156 | `FUN_0001fbf8` | — | — | **SLEEP_REPORT_ENABLE — logger only, NO-OP**. Prints current flash params; does not write any config field. |
+| 0x0168 | `FUN_0002b228` | `+0xb94` | u8 | SLEEP_MOUNT_POSITION (0-3 clamped) |
+| 0x0169 | `FUN_00029f48` | `+0xb98` | u32 | SLEEP_ZONE_SIZE packed `(width_cm<<16)\|length_cm` |
+| 0x0170 | `FUN_0002b27c` | `+0xb9c` | u8 | WALL_CORNER_POS (mounting orientation for general tracking; distinct from SLEEP_MOUNT_POSITION) |
+| 0x0173 | `FUN_0002ae24` | `+0xba1` | u8 | WALK_DISTANCE_ENABLE (also clears `+0xba4` cached walk-distance accumulator on change) |
+| 0x0177 | `FUN_0002bfa0` | `+0xb92` | u16 | SLEEP_BED_HEIGHT |
+| 0x0178 | `FUN_0002c4a4` | `+0xbb0` | u16 | OVERHEAD_HEIGHT (range [150,400], default 220) |
+
+**SBL byte[4] is permanently 0 on this device.** Scanning the FW3 binary for
+all stores to `config+0xb6c` returns only cold-init zeroing and WORK_MODE
+clear-to-zero. No WRITE handler sets it non-zero. So the SBL
+`sleep_enable==1` firmware-selection branch is dead code, and `work_mode==9`
+is the sole path to FW3 boot.
+
+#### FW3 geometry functions (Ghidra)
+
+Bed-region geometry built by `FUN_00006390` in DSS task. Helpers:
+
+- `FUN_0002e768` — width in meters = `(zone_size>>16) / 100.0`
+- `FUN_0002e740` — length in meters = `(zone_size & 0xFFFF) / 100.0`
+- `FUN_0002b760` / `FUN_0002b850` — mount_position X/Y offset, returns 0 when
+  `FUN_0002dca8()` returns 0 or mount_position ∈ {0,3}
+- `FUN_0002b620` — mount_angle in radians = `π × (90 - *(config+0x508)) / 180`
+
+`FUN_0002dca8` is a boolean gate:
+```
+return (config+0x510 == 1)
+    OR (config+0x510 == 2 AND config+0x5b8 ∈ {4, 7})
+```
+Fresh-init defaults: `+0x510=2`, `+0x5b8=3` → returns 0 (geometry disabled).
+Driver's init sends `FALL_SENSITIVITY=1` which writes `+0x510=1`, enabling it.
+
+#### FW3 DSS — C674x DSP code analysis (2026-04-21)
+
+`fp2_radar_vitalsigns.bin` is the MSS (Cortex-R4F) slice only. The complete
+FW3 image is packaged as three TI RPRC subimages (RPRC magic = `"RPRC"`):
+
+| File | Type | Size | Contents |
+|------|------|------|----------|
+| `fw3_rprc0_type4.bin` | 0x04 (MSS R4F) | 210KB | Same code as `fp2_radar_vitalsigns.bin` at offset 0 |
+| `fw3_rprc1_typec.bin` | 0x0c (DSS_DATA) | 247KB | Shared TI-RTOS blob, identical SHA256 across FW1/FW2/FW3 |
+| `fw3_rprc2_typed.bin` | 0x0d (DSS_APP) | 262KB | **FW3 DSS vital-signs application (C674x DSP code)** |
+
+Strip the 48-byte RPRC header to get the raw C674x code at offset 0x30.
+Entry point 0x007f5fe0 (from RPRC header offset 4).
+
+**Aqara's FW3 is built from TI mmWave Industrial Toolbox 4.11.0
+`Vital_Signs_With_People_Tracking` lab.** Embedded path strings in both MSS
+and DSS binaries confirm:
+
+```
+C:/ti/mmwave_industrial_toolbox_4_11_0/labs/Vital_Signs/
+  Vital_Signs_With_People_Tracking/src/common/dpc/
+    capon3d_vitalsigns/src/objectdetection.c
+  Vital_Signs_With_People_Tracking/src/common/dpc/
+    objdetrangehwa_vitalsigns/src/objdetrangehwa.c
+  Vital_Signs_With_People_Tracking/src/dss/dss_main.c
+  Vital_Signs_With_People_Tracking/src/mss/mss_main.c
+  Vital_Signs_With_People_Tracking/src/mss/pcount3D_cli.c
+```
+
+The pipeline is:
+
+1. ADC buffer + range FFT (HWA)
+2. `RADARDEMO_aoaEst2DCaponBF` — 2D Capon angle beamforming (azimuth × elevation)
+3. Dynamic CFAR (`RADARDEMO_detectionCFAR_handle` configured via
+   `dynamicRACfarCfg`) — detects moving targets
+4. Static CFAR (configured via `staticRACfarCfg`) — detects stationary targets
+5. Point cloud assembly (range, angle, Doppler, SNR per detection)
+6. **TI GTrack group tracker** (`src/gtrack_module.c`) — allocates, associates,
+   and maintains tracks via Kalman filtering
+7. Vital-signs FFT on the tracked point's phase history (breathing + heart rate)
+8. Write results into `VS_Data_MSS2DSS` shared-memory struct
+9. MSS's `FUN_0002ad1c` task loop reads the struct and calls `FUN_00006c84`
+   to emit 0x0117 frames
+
+#### Aqara's hard-coded DSS defaults
+
+Extracted from MSS binary strings (these are the CLI commands Aqara's
+`pcount3D_cli.c` fires at boot to configure the DSS):
+
+```
+sensorPosition 2 0 0                 # sensor height 2m, az=0°, el=0°
+staticBoundaryBox -1.5 1.5 0 2.5 -3 3    # x∈[-1.5,1.5], y∈[0,2.5], z∈[-3,3]
+presenceBoundaryBox -1.5 1.5 0 2.5 -3 3
+fovCfg -1 70.0 20.0                  # 70° azimuth, 20° elevation
+
+# CFAR
+dynamicRACfarCfg -1 3 4 2 2 8 12 4 12 5.00 8.00 0.40 1 1
+staticRACfarCfg  -1 6 2 2 2 8 8 6 4 8.00 15.00 0.30 0 0
+
+# Angle estimation
+dynamic2DAngleCfg -1 1.5 0.0300 1 0 1 0.30 0.85 8.00
+dynamicRangeAngleCfg -1 0.75 0.0010 1 0
+
+# GTrack allocation
+allocationParam 20 100 0.1 10 0.5 20
+# snrThre=20 snrThrObscured=100 velocityThre=0.1 pointsThre=10 maxDistThre=0.5 maxVelThre=20
+
+# GTrack state machine
+stateParam 2 50 50 900 50 9000
+# det2active=2 det2free=50 active2free=50 static2free=900 exit2free=50 sleep2free=9000
+
+# GTrack gating
+gatingParam 3 2 2 3 4
+
+# GTrack
+trackingCfg 1 2 800 1 46 96 70
+
+# Vital signs
+vitalsign 15 300
+fineMotionCfg -1 1
+```
+
+#### The GTrack velocity allocation gate — actual silent-all-night cause
+
+DSS's `gtrack_moduleAllocate()` (verified in TI SDK source
+`/tmp/ti-sdk/sdk/mmwave_sdk_01_02_00_05/packages/ti/alg/gtrack/src/gtrack_module.c`,
+line 190-192):
+
+```c
+if((allocNum > inst->params.allocationParams.pointsThre) &&    // >10 points
+   (allocSNR > inst->params.allocationParams.snrThre) &&        // SNR sum > 20
+   (fabs(un[2]) > inst->params.allocationParams.velocityThre) ) // |velocity| > 0.1 m/s
+{
+    /* Allocate new tracker */
+}
+```
+
+`un[2]` is the cluster centroid's radial velocity (doppler). To allocate a new
+track, the centroid must have |velocity| > 0.1 m/s. A sleeping person has
+radial velocity ≈ 0 (chest expansion is sub-mm per frame, 0 at CFAR point
+resolution). The cluster velocity fails the gate. **No track is ever created,
+numCurrentTargets stays 0 in the VS_Data_MSS2DSS struct, no 0x0117 emit.**
+
+This is why the sensor goes silent for the whole night if Sleep Monitoring is
+set while the user is already in bed.
+
+#### The workaround (documented in 04-esphome-component.md Operating Modes)
+
+Once a track is allocated from motion, the state machine keeps it alive via
+long static/sleep timers:
+
+```
+stateParam 2 50 50 900 50 9000
+# static2free=900 frames (~45s)  sleep2free=9000 frames (~7.5 min)
+```
+
+So the correct sleep-mode entry is: cycle Operating Mode to Sleep Monitoring
+while empty of bed, let FW3 boot, then **walk to the bed and climb in with
+motion**. The track allocates within 2-3 seconds of sustained detection, then
+persists via the sleep-state timer. Lying still thereafter is fine.
+
+#### MSS → DSS IOCTL surface (embedded MSS error strings)
+
+```
+DPC_OBJDET_IOCTL__STATIC_PRE_START_CFG
+DPC_OBJDET_IOCTL__STATIC_PRE_START_COMMON_CFG
+DPC_OBJDETRANGEHWA_IOCTL__STATIC_PRE_START_CFG
+DPC_OBJDETRANGEHWA_IOCTL__STATIC_PRE_START_COMMON_CFG
+DPC_OBJDETRANGEHWA_IOCTL__TRACKER_STATIC_CFG
+```
+
+The MSS uses these IOCTLs to push the CLI-derived configs into the DSS
+Data-Processing Chain (DPC). Any driver-side fix to override `velocityThre=0`
+would need to either send a different `allocationParam` command BEFORE start,
+or send a post-start tracker reconfig. Whether Aqara exposes any attribute
+SubID that wraps such a command is still undetermined.
+
+#### FW3 DSS ancestor sources (cloned locally for reference)
+
+Public TI-ancestor repos in `/tmp/vital_signs_people_tracking/`:
+
+- `multiple-person-vital-signs/firmware/vital_signs_tracking_dss/` — an
+  OLDER `oddemo_heatmap` lineage that Aqara does **NOT** use. Has a
+  2000.0f peak threshold and row-noise self-calibration — neither of these
+  apply to Aqara's capon3d_vitalsigns build.
+- `hoangnv31/mmwave_tracking/datapath/dpc/objectdetection/objdetdsp/` —
+  capon3d 3D people counting (no vital signs). Same base detection pipeline
+  Aqara uses but without the VS overlay.
+
+TI's GTrack library is shipped with mmwave_sdk — at
+`/tmp/ti-sdk/sdk/mmwave_sdk_01_02_00_05/packages/ti/alg/gtrack/`. This
+is the authoritative source for the allocation gate logic.
+
+The exact `Vital_Signs_With_People_Tracking` source is TI-proprietary (binary-
+only distribution), but we now have enough cross-reference to understand the
+algorithm fully.
 
 ### Priority 4: 0x03xx Attribute Range
 
