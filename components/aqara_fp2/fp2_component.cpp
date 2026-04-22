@@ -624,8 +624,19 @@ void FP2Component::check_initialization_() {
     }
 
     // 7. Publish known initial states after reset
-    // After radar reset, we know there is no occupancy/motion detected yet
-    ESP_LOGI(TAG, "Publishing initial states (no occupancy after reset)");
+    // After radar reset, we know there is no occupancy/motion detected yet.
+    //
+    // Exception: if we've already seen a sleep-occupancy signal in the
+    // last 30 s (0x0159/0x0167/0x0171), the sleeper is already tracked —
+    // suppress the global/sleep OFF publishes so the 45 s re-init doesn't
+    // flatten the state we just asserted. Other sensors (zones, motion,
+    // people count, fall) still reset normally.
+    const bool have_fresh_vitals =
+        sleep_mode_active_ && last_vitals_millis_ != 0 &&
+        (millis() - last_vitals_millis_) < 30000U;
+
+    ESP_LOGI(TAG, "Publishing initial states (no occupancy after reset)%s",
+             have_fresh_vitals ? " — sleep occupancy preserved" : "");
     for (const auto &zone : zones_) {
       zone->publish_presence(false);
       zone->publish_motion(false);
@@ -634,12 +645,16 @@ void FP2Component::check_initialization_() {
       }
     }
 
-    if (global_presence_sensor_ != nullptr) global_presence_sensor_->publish_state(false);
+    if (!have_fresh_vitals) {
+      if (global_presence_sensor_ != nullptr) global_presence_sensor_->publish_state(false);
+    }
     if (global_motion_sensor_ != nullptr) global_motion_sensor_->publish_state(false);
     if (people_count_sensor_ != nullptr) people_count_sensor_->publish_state(0);
     if (fall_detection_sensor_ != nullptr) fall_detection_sensor_->publish_state(false);
-    if (sleep_state_sensor_ != nullptr) sleep_state_sensor_->publish_state("none");
-    if (sleep_presence_sensor_ != nullptr) sleep_presence_sensor_->publish_state(false);
+    if (!have_fresh_vitals) {
+      if (sleep_state_sensor_ != nullptr) sleep_state_sensor_->publish_state("none");
+      if (sleep_presence_sensor_ != nullptr) sleep_presence_sensor_->publish_state(false);
+    }
 
     // Clear target tracking state - no targets after reset
     if (target_tracking_sensor_ != nullptr) {
