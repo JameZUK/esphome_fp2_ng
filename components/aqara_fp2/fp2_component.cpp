@@ -968,6 +968,16 @@ void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
         ESP_LOGW(TAG, "[READBACK] SubID=0x%04X short payload (len=%d)",
                  (uint16_t) attr_id, (int) payload.size());
       }
+      // Also route known SubIDs through the publish handlers so sensors
+      // populate from the READ response. FW3 (Sleep) doesn't emit
+      // unsolicited 0x0128 REPORTs — the READ reply is the only source.
+      switch (attr_id) {
+        case AttrId::TEMPERATURE:
+          handle_temperature_report_(payload);
+          break;
+        default:
+          break;
+      }
       break;
     default:
       ESP_LOGW(TAG, "Unhandled OpCode: %d", type);
