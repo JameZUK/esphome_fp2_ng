@@ -55,6 +55,66 @@ void FP2Component::publish_radar_state_(const char *state) {
   }
 }
 
+void FP2Component::publish_mode_scoped_sensor_reset_(uint8_t scene_mode) {
+  // Mark sensors N/A (NaN for numeric, false for binary, "none" for
+  // text) when they're not applicable to the newly-entered mode.
+  // Sensors the new mode DOES emit will be re-populated by the normal
+  // handlers within seconds of radar restart + init. Called from
+  // set_operating_mode().
+  //
+  // Mode-to-sensor matrix (based on which radar FW emits which SubIDs):
+  //
+  //   scene_mode  = 3  (Zone Detection,       FW1)
+  //               = 8  (Fall Detection / Fall + Positioning, FW2)
+  //               = 9  (Sleep Monitoring,     FW3)
+  //
+  //   Sleep/vitals sensors — emitted only by FW3 (mode 9):
+  //     sleep_presence (0x0167), sleep_state (0x0161),
+  //     heart_rate / respiration_rate / heart_rate_deviation (0x0159)
+  //
+  //   Fall sensors — emitted only by FW2 (mode 8 variants):
+  //     fall_detection (0x0121)
+  //     fall_overtime (deprecated; never populates regardless of mode)
+  //
+  //   Zone/motion/tracking/counting/posture — common to FW1/FW2, not FW3.
+  //
+  // global_presence, radar_temperature, radar_state, radar_software_version
+  // are mode-agnostic and never cleared here.
+  const bool new_is_sleep = (scene_mode == 9);
+  const bool new_is_fall  = (scene_mode == 8);
+  const bool new_is_zone  = (scene_mode == 3);
+
+  if (!new_is_sleep) {
+    if (sleep_presence_sensor_ != nullptr)   sleep_presence_sensor_->publish_state(false);
+    if (sleep_state_sensor_ != nullptr)      sleep_state_sensor_->publish_state("none");
+    if (heart_rate_sensor_ != nullptr)       heart_rate_sensor_->publish_state(NAN);
+    if (respiration_rate_sensor_ != nullptr) respiration_rate_sensor_->publish_state(NAN);
+    if (heart_rate_dev_sensor_ != nullptr)   heart_rate_dev_sensor_->publish_state(NAN);
+    hr_window_.clear();
+    last_vitals_millis_ = 0;
+  }
+
+  if (!new_is_fall) {
+    if (fall_detection_sensor_ != nullptr) fall_detection_sensor_->publish_state(false);
+    if (fall_overtime_sensor_ != nullptr)  fall_overtime_sensor_->publish_state(false);
+  }
+
+  if (!new_is_zone && !new_is_fall) {
+    // No presence/motion/counting/posture in Sleep mode — FW3 doesn't
+    // emit 0x0103/0x0115/0x0154/0x0155/0x0174/0x0175 for zones.
+    for (auto &z : zones_) {
+      z->publish_presence(false);
+      z->publish_motion(false);
+      if (z->posture_sensor != nullptr)          z->posture_sensor->publish_state("none");
+      if (z->zone_people_count_sensor != nullptr) z->zone_people_count_sensor->publish_state(0);
+    }
+    if (global_motion_sensor_ != nullptr)     global_motion_sensor_->publish_state(false);
+    if (people_count_sensor_ != nullptr)      people_count_sensor_->publish_state(0);
+    if (walking_distance_sensor_ != nullptr)  walking_distance_sensor_->publish_state(NAN);
+    if (target_tracking_sensor_ != nullptr)   target_tracking_sensor_->set_has_state(false);
+  }
+}
+
 void FP2Component::setup() {
   // Reset internal state
   waiting_for_ack_attr_id_ = AttrId::INVALID;
@@ -197,6 +257,12 @@ void FP2Component::set_operating_mode(const std::string &mode) {
   ESP_LOGI(TAG, "Operating mode: %s (scene=%d, sleep=%d, fall_only=%d)",
            mode.c_str(), scene_mode, sleep, fall_only_mode_active_);
   sleep_mode_active_ = sleep;
+
+  // Clear sensors that the new mode won't produce, so HA doesn't keep
+  // showing stale values from the previous mode. For any sensor the
+  // new mode DOES produce, the radar will re-emit and our handlers
+  // will re-publish a live value within seconds.
+  publish_mode_scoped_sensor_reset_(scene_mode);
 
   // Save mode index to flash for restore on boot
   uint8_t mode_index = 0;
@@ -365,13 +431,21 @@ void FP2Component::loop() {
     if (server != nullptr && server->is_connected()) {
       uint8_t mode = 0;
       static const char *NAMES[] = {"Zone Detection", "Fall Detection", "Sleep Monitoring", "Fall + Positioning"};
+      static const uint8_t SCENES[] = {3, 8, 9, 8};
+      uint8_t resolved = 0;
       if (operating_mode_pref_.load(&mode) && mode < 4) {
         operating_mode_select_->publish_state(NAMES[mode]);
         ESP_LOGI(TAG, "Published restored operating mode: %s", NAMES[mode]);
+        resolved = mode;
       } else {
         operating_mode_select_->publish_state(NAMES[0]);
         ESP_LOGI(TAG, "No saved mode, defaulting to Zone Detection");
+        resolved = 0;
       }
+      // Gate mode-scoped sensors to the restored mode from the start,
+      // so HA doesn't briefly show stale values from whichever mode
+      // ESPHome last reported before the restart.
+      publish_mode_scoped_sensor_reset_(SCENES[resolved]);
       operating_mode_published_ = true;
     }
   }

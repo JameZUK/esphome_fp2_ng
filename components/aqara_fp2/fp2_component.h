@@ -572,6 +572,11 @@ protected:
   void check_initialization_();
   void publish_radar_state_(const char *state);
 
+  // Mark sensors N/A (NaN/false/"none") for entities the new mode
+  // won't produce. Called from set_operating_mode() on every mode
+  // change so HA never shows stale values from the previous mode.
+  void publish_mode_scoped_sensor_reset_(uint8_t scene_mode);
+
   // Quiet-timeout auto-clear for Sleep Monitoring. FW3 stops emitting
   // state entirely once GTrack releases the track, so we need to infer
   // "room empty" from radar silence.

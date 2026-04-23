@@ -2,6 +2,34 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
+## 2026-04-23 — Mode-scoped sensor reset on mode change
+
+HA used to keep showing the last-seen heart_rate, sleep_state, or
+fall_detection values after switching to a mode that no longer emits
+them — e.g. leaving Sleep Monitoring for Zone Detection would leave
+HR, BR, sleep_state stale forever.
+
+New `publish_mode_scoped_sensor_reset_(scene_mode)` walks the sensor
+set and marks every entity the **new** mode won't populate:
+
+- Entering Zone Detection / Fall / Fall + Positioning → sleep_presence,
+  sleep_state, heart_rate, respiration_rate, heart_rate_deviation all
+  clear; HR ring buffer and vitals watermark zero out.
+- Entering Zone Detection / Sleep Monitoring → fall_detection and
+  fall_overtime clear.
+- Entering Sleep Monitoring → zone presence/motion/people-count/posture,
+  global motion, people_count, walking_distance, target_tracking all
+  clear (FW3 doesn't emit these).
+
+Called from `set_operating_mode()` on every user-initiated switch AND
+from the boot-time operating_mode restore path, so HA never briefly
+shows stale values from whichever mode the ESP last reported before a
+restart. Mode-agnostic sensors (global_presence, radar_temperature,
+radar_state, radar_software_version) are never touched by the reset.
+
+Sensors the new mode does produce will be re-populated by their
+normal handlers within seconds of the radar restart + init.
+
 ## 2026-04-23 — Differentiate Fall Detection vs Fall + Positioning
 
 Previously these two select-entity values mapped to identical radar
