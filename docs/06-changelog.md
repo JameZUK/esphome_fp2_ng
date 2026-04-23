@@ -19,20 +19,33 @@ SubIDs we RX are not fall events at all.
 
 **What was invented on our side (not on the wire):**
 
-- `FALL_OVERTIME_PERIOD = 0x0134` BLOB2 U32 — WRITE in init burst, not in
-  stock's cloud-attr table. Radar silently drops.
-- `FALL_DELAY_TIME = 0x0179` U16 — same.
-- `FALLDOWN_BLIND_ZONE = 0x0180` BLOB2 40B — same.
+- `FALL_OVERTIME_PERIOD = 0x0134` BLOB2 U32 — WRITE removed. FW1 MSS
+  dispatcher routes 0x0134 to its unknown-SubID error path (verified
+  via `FUN_00009718` control flow — lands at 0x9BFC: `movw r2, #0x59f;
+  b 0x9db0`). Confirmed dead on the wire.
 - `FALL_OVERTIME_DETECTION = 0x0135` / `FALL_OVERTIME_REPORT = 0x0136` —
-  not fall events. 0x0135's stock handler (0x400e11ac) reads a u16
-  calibration/version value ("13.25.85"); 0x0136's stock handler
-  (0x400df760) is a 3-byte stub. Our `fall_overtime_sensor_` was wired
-  to SubIDs that never fire.
+  not fall events on the ESP side either. 0x0135's stock handler
+  (0x400e11ac) reads a u16 calibration/version value ("13.25.85");
+  0x0136's stock handler (0x400df760) is a 3-byte stub. Our
+  `fall_overtime_sensor_` was wired to SubIDs that never fire.
 
-The underlying radar parameters do exist in FW2 (debug strings
-`fall_delay_time:%d`, `falldown_blind_zone_lable`, `fallRecognizeTimeInUsec`)
-but they're configured via a command channel outside the cloud-attr
-SubID namespace — we haven't mapped it.
+**Correction (radar-side verification):** Two SubIDs we initially removed
+are actually real — the stock ESP simply doesn't use them, but the
+**radar MSS accepts them directly**:
+
+- `FALL_DELAY_TIME = 0x0179` U16 — FW1 MSS handler at `0x00026200`
+  decodes u16 payload, stores to config offset `+0x290`, logs
+  `"fall_delay_time: %d\n"`. Functional WRITE. **Re-instated.**
+- `FALLDOWN_BLIND_ZONE = 0x0180` BLOB2 40B — FW1 MSS handler at
+  `0x0001da24` memcmp's 40 bytes at config `+0x1c`, memcpy's payload
+  if changed, sets update flags at `+0xa4`/`+0xa5`. Functional WRITE.
+  **Re-instated.**
+
+Upstream corroboration: hansihe's PROTOCOL.md lists 0x0134/0x0135 as
+RW attributes, and `decoded_conf_zone.txt` in the same repo captured
+a live stock trace of `fall_detection_sensitivity (0123) = 1` during
+normal Aqara-app setup — so "1" is the real stock-in-practice default
+(driver default matches).
 
 ### Code changes
 
@@ -44,11 +57,12 @@ SubID namespace — we haven't mapped it.
   "unknown"; warning logged at setup if configured.
 - **Clamp `fall_detection_sensitivity` to 0..3** in the setter, matching
   stock's radar-side validation (`bltui a10, 0x4` in
-  `HandleCloud_Write_Dispatcher`). Default changed from 1 to **0** to
-  match stock's factory-fresh value — the storage byte at
-  `*(Ram400d0e40+0x700)+0x1a` is zero-initialised by a `memset` in
-  `radar_ready_init_state @ 0x400e644c` and is not NVS-restored on the
-  ESP side. Users can override to 1..3 via YAML `fall_detection_sensitivity`.
+  `HandleCloud_Write_Dispatcher`). Default stays at **1** — this is the
+  value captured in a live stock trace (`decoded_conf_zone.txt` in the
+  upstream RE repo: `WRT> fall_detection_sensitivity (0123) Seq:10 : 1`),
+  reflecting what the Aqara app writes during normal setup. The
+  factory-fresh RAM value is 0 (zero-init), but no FP2 in field use
+  runs with 0 — the app always writes 1 after pairing.
 - Clean up 0x0121 comment — drop unverified "type A / type B"
   interpretation; treat as raw u8 boolean.
 - Fix stale comment claiming "Actual fall detection uses SubID 0x0306"

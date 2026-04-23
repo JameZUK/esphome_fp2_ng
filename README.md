@@ -557,7 +557,12 @@ If HR/BR stay unknown after the above:
 
 - **Advanced fall detection requires radar firmware swap** — Fall Detection mode selects FW2 at boot via `WORK_MODE=8` (SubID 0x0116). FW2 has a DSP-based fall detection algorithm with scoring and height estimation, distinct from FW1. The radar emits fall events on **SubID 0x0121** (U8, 0=clear, non-zero=fall) — this is the only fall channel on the wire.
 
-- **Fall detection — limited protocol surface** — A 2026-04-23 Ghidra audit of stock FW1 confirmed only `FALL_SENSITIVITY` (SubID 0x0123, U8, clamped 0..3) is genuinely routed through stock's cloud-attr dispatcher. The other YAML options (`fall_overtime_period`, `fall_delay_time`, `falldown_blind_zone`) and the `fall_overtime` binary sensor exist in this driver but are **not on the protocol wire** — stock never writes/reads those SubIDs. Those YAML options are retained as no-ops for config backwards-compat; a warning is logged at setup when they're set. The underlying radar parameters exist in FW2 (per debug strings `fall_delay_time:%d`, `falldown_blind_zone_lable`) but are configured via some other command channel we haven't mapped.
+- **Fall detection — mixed protocol surface** — A 2026-04-23 Ghidra audit cross-checked stock ESP FW1 and the radar MSS firmware. Three of the five fall-related protocol points work, two don't:
+  - `FALL_SENSITIVITY` (0x0123, U8, clamped 0..3 by stock) — **works**. Stock writes 1 during normal setup; driver default is 1.
+  - `FALL_DELAY_TIME` (0x0179, U16) — **works** at the radar side. FW1 MSS has a real handler at `0x00026200` that decodes u16 and stores it, even though stock ESP never emits this SubID through its cloud-attr path.
+  - `FALLDOWN_BLIND_ZONE` (0x0180, 40-byte BLOB2) — **works** at the radar side. FW1 MSS handler at `0x0001da24` memcmp's/memcpy's into its config.
+  - `FALL_OVERTIME_PERIOD` (0x0134, U32) — **dead**. FW1 MSS dispatcher routes it to the unknown-SubID error path. YAML option retained for backwards-compat but no WRITE is sent; a warning is logged at setup if configured.
+  - `fall_overtime` binary sensor wired to SubIDs 0x0135/0x0136 — **dead**. Neither SubID carries a fall-overtime event in stock firmware; the sensor will remain "unknown".
 
 - **Sleep state** — Only values 0 (awake), 1 (light sleep), 2 (deep sleep) exist in the vital signs firmware. No REM detection.
 

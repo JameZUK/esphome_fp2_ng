@@ -535,17 +535,31 @@ void FP2Component::check_initialization_() {
       };
       enqueue_command_blob2_(AttrId::SLEEP_ZONE_SIZE, szs_data);
     }
-    // FALL_DELAY_TIME (0x0179) WRITE removed 2026-04-23: not in stock's
-    // cloud-attr dispatch table. YAML retained but no-op. See changelog.
+    // FALL_DELAY_TIME (0x0179) WRITE — re-instated 2026-04-23 after
+    // radar-side Ghidra verification. Stock ESP doesn't emit this via
+    // its cloud-attr dispatcher, but FW1 MSS has a real handler at
+    // 0x00026200: reads u16 from payload, stores to config offset +0x290,
+    // logs "fall_delay_time: %d\n". So the radar DOES accept this WRITE
+    // even though the cloud path doesn't route it. U16 dtype matches.
+    if (fall_delay_time_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::FALL_DELAY_TIME, fall_delay_time_);
+    }
     if (sleep_bed_height_ > 0) {
       enqueue_command_(OpCode::WRITE, AttrId::SLEEP_BED_HEIGHT, sleep_bed_height_);
     }
     if (overhead_height_ > 0) {
       enqueue_command_(OpCode::WRITE, AttrId::OVERHEAD_HEIGHT, overhead_height_);
     }
-    // FALLDOWN_BLIND_ZONE (0x0180) WRITE removed 2026-04-23: not in
-    // stock's cloud-attr dispatch table. YAML retained but no-op. See
-    // changelog.
+    // FALLDOWN_BLIND_ZONE (0x0180) WRITE — re-instated 2026-04-23 after
+    // radar-side Ghidra verification. Stock ESP doesn't emit this, but
+    // FW1 MSS handler at 0x0001da24 does real work: memcmp's 40 bytes
+    // at config+0x1c, memcpy's if different, sets change flags at
+    // +0xa4/+0xa5. So the radar accepts this WRITE independent of
+    // stock ESP routing.
+    if (has_falldown_blind_zone_) {
+      enqueue_command_blob2_(AttrId::FALLDOWN_BLIND_ZONE,
+          std::vector<uint8_t>(falldown_blind_zone_.begin(), falldown_blind_zone_.end()));
+    }
     }  // end if (!(emulate_stock_ && sleep_mode_active_))
 
     // 2. Grids — all three must be sent every init for the radar to produce
@@ -2054,23 +2068,17 @@ void FP2Component::dump_config() {
       ESP_LOGCONFIG(TAG, "  Firmware URL: %s", radar_firmware_url_.c_str());
     }
   }
-  // Deprecation warnings — these YAML options are accepted for config
-  // backwards-compat but stock firmware does not route the matching
-  // SubIDs through the cloud-attr channel, so the WRITEs we used to
-  // send were silently dropped by the radar. Kept as storage-only.
+  // Deprecation warnings — only for things that actually don't work.
+  // fall_delay_time (0x0179) and falldown_blind_zone (0x0180) are
+  // accepted by the radar MSS directly (verified via Ghidra against
+  // fp2_radar_mss.bin handlers at 0x00026200 and 0x0001da24) even
+  // though stock ESP doesn't route them through the cloud-attr path.
+  // fall_overtime_period (0x0134) really is dead — FW1 dispatcher
+  // routes it to the unknown-SubID error path.
   if (fall_overtime_period_ > 0) {
     ESP_LOGW(TAG, "  fall_overtime_period (%u ms) is configured but NOT sent to radar — "
-                  "SubID 0x0134 is not in stock's cloud-attr dispatch. No-op.",
+                  "SubID 0x0134 lands in FW1 MSS unknown-SubID error path. No-op.",
              (unsigned) fall_overtime_period_);
-  }
-  if (fall_delay_time_ > 0) {
-    ESP_LOGW(TAG, "  fall_delay_time (%u) is configured but NOT sent to radar — "
-                  "SubID 0x0179 is not in stock's cloud-attr dispatch. No-op.",
-             (unsigned) fall_delay_time_);
-  }
-  if (has_falldown_blind_zone_) {
-    ESP_LOGW(TAG, "  falldown_blind_zone is configured but NOT sent to radar — "
-                  "SubID 0x0180 is not in stock's cloud-attr dispatch. No-op.");
   }
   if (fall_overtime_sensor_ != nullptr) {
     ESP_LOGW(TAG, "  fall_overtime sensor is deprecated — radar does not emit "
