@@ -43,8 +43,12 @@ SubID namespace — we haven't mapped it.
   `fall_overtime_sensor_`. Sensor entity retained but will now stay
   "unknown"; warning logged at setup if configured.
 - **Clamp `fall_detection_sensitivity` to 0..3** in the setter, matching
-  stock's radar-side validation. Default changed from 1 to **3** (max
-  sensitivity), configurable via YAML.
+  stock's radar-side validation (`bltui a10, 0x4` in
+  `HandleCloud_Write_Dispatcher`). Default changed from 1 to **0** to
+  match stock's factory-fresh value — the storage byte at
+  `*(Ram400d0e40+0x700)+0x1a` is zero-initialised by a `memset` in
+  `radar_ready_init_state @ 0x400e644c` and is not NVS-restored on the
+  ESP side. Users can override to 1..3 via YAML `fall_detection_sensitivity`.
 - Clean up 0x0121 comment — drop unverified "type A / type B"
   interpretation; treat as raw u8 boolean.
 - Fix stale comment claiming "Actual fall detection uses SubID 0x0306"

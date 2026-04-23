@@ -596,7 +596,7 @@ protected:
   // Configuration State
   uint8_t mounting_position_{0x01}; // Default Wall
   bool left_right_reverse_{false};
-  uint8_t fall_detection_sensitivity_{3};
+  uint8_t fall_detection_sensitivity_{0};
   uint32_t fall_overtime_period_{0};    // 0 = not configured (ms)
   uint16_t fall_delay_time_{0};         // 0 = not configured
   bool dwell_time_enable_{false};
