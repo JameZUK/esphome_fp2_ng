@@ -517,15 +517,22 @@ decompiled TI IWR6843 radar firmware (`fp2_radar_mss.bin` = FW1 DSS, ARM:LE:32:v
 | 0x0121 | FALL_DETECTION | **NOT FOUND** | Not sent by radar | **ISSUE** |
 | 0x0154 | TARGET_POSTURE | `FUN_000229d0` | UINT16 [zone_id, posture] | **YES** |
 | 0x0159 | (unknown) | — | **Not emitted by FUN_00006c84** — prior note was wrong. 0x0159 may be emitted elsewhere in FW3 but hasn't been traced to a specific emit site. Our older SLEEP_DATA float decoder was based on TI reference debug strings and was never confirmed on the wire. | **NO** |
-| 0x0117 | HR/BR (FW3 only) | `FUN_00006c84` | 14-byte per-target: `[count=1][track_id][HR×100 u16 BE][BR×100 u16 BE][zeros]` | **YES** (2026-04-21) |
+| 0x0117 | HR/BR **secondary** (FW3) | `FUN_00006c84` at `0x00006e2c` | 15-byte: `[marker=1][state_byte][HR×100 u16 BE][BR×100 u16 BE][zeros]`. **Rarely fires** (gated on +0xb8 + target_count + frame counter). Primary vitals channel is 0x0159. | **YES** (2026-04-22) |
+| 0x0159 | SLEEP_DATA (primary vitals) | `FUN_00006c84` at `0x0000701a` | 12-byte direct-u8 BLOB: `[tid][0][0][HR_bpm u8][0][HR_conf][BR_bpm u8][0][BR_conf][state][stage][event]`. Ungated once track allocated. | **YES** (2026-04-22) |
+| 0x0121 | FALL_DETECTION_RESULT (FW2) | radar emit `0x0001db92` → ESP handler `0x400e5388` | UINT8 (0=clear, non-zero=fall) | **YES** (2026-04-23) |
 | 0x0161 | SLEEP_STATE | `FUN_00026fcc` | UINT8 (0=awake, 1=light, 2=deep only) | partial |
 | 0x0167 | SLEEP_PRESENCE | `FUN_00026a58` | UINT8 strictly 0/1 | partial |
 | 0x0171 | SLEEP_IN_OUT | `FUN_0002df1c` (vs) | UINT8 (0=exit, 1=enter) | partial |
 | 0x0176 | SLEEP_EVENT | `FUN_0002cf68` (vs) | UINT8 (1=light, 2=deep transition) | partial |
 
 Key findings from validation:
-- **0x0121 is ANGLE_SENSOR_REV, not fall detection** — dispatch table confirmed.
-  0x0122 is the stock fall handler. Actual fall signal is **SubID 0x0306** (UINT8: 0/1).
+- **0x0121 is FALL_DETECTION_RESULT, emitted directly by FW2 radar**
+  (`movw r1, #0x121` at radar `0x0001db88`). Corrected 2026-04-23 after
+  earlier sessions mis-identified the handler. Prior claim of
+  "SubID 0x0306" was fiction — no MSS firmware emits 0x0306. Prior
+  claim that 0x0121 was "angle sensor" was from a mis-read dispatch
+  table. Prior claim that fall came via 0x0155 PEOPLE_COUNTING was
+  wrong — 0x0155's `ontime` field is dwell time, not fall state.
 - **0x0155 PEOPLE_COUNTING is dwell time, not fall** — 7-byte BLOB2:
   `[ZoneID:1][Count:2 BE][DwellTime:4 BE]`. DwellTime = 0.15 × frame_count.
 - **SLEEP_STATE has no REM** — only values 0, 1, 2 produced by radar state machine
@@ -548,16 +555,23 @@ Key findings from validation:
 
 ### Completed: 0x0155 PEOPLE_COUNTING and Fall Detection Path
 
-**Status: SOLVED** — fall detection uses SubID 0x0306, NOT 0x0155.
+**Status: SOLVED 2026-04-23** — fall detection uses SubID **0x0121**,
+emitted directly by FW2 radar. Earlier claims of 0x0306 or 0x0155
+were both wrong.
 
 - **0x0155** is people counting + dwell time. `ontime_value = 0.15 × frame_count`.
   Non-zero whenever anyone is present. NOT a fall indicator.
-- **0x0306** is the actual fall detection result (UINT8: 0=no fall, 1=fall).
-  Sent from radar FUN_000244f8, offset +0x589 in config struct.
-- **Fall detection algorithm** uses state machine at offset +0x587. Checks targets
-  within defined boundary region for 25 frames.
+- **0x0121** is FALL_DETECTION_RESULT. FW2 emits it at radar offset
+  `0x0001db92` (loads `[r0+0x50c]`). Stock ESP routes via RAM dispatch
+  `0x3ffb13a0` → handler `0x400e5388`. UINT8: 0=clear, non-zero=fall.
+  Stock stores the raw u8 without a type-A/type-B interpretation.
+- **Fall detection algorithm** uses a state machine tied to the
+  FW2-specific DSP fall scoring. FW1's fall capabilities are limited.
 - **FW2 has enhanced fall detection** with DSP scoring, height estimation,
-  and a small custom neural network. FW1's fall detection is basic.
+  and a small custom neural network.
+- **Superseded prior claims** (preserved so old analyses don't resurface):
+  "0x0306" was fiction — no MSS firmware emits 0x0306 at all. "0x0121
+  = angle sensor" was a mis-reading of the stock ESP dispatch table.
 
 ### Completed: NVS Lux Calibration
 

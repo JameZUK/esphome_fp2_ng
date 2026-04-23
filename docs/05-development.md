@@ -180,10 +180,13 @@ which skips the register address write).
 
 ### Resolved (Previously Listed)
 
-- ~~Fall detection~~ — Implemented via 0x0155 PEOPLE_COUNTING. Confirmed by
-  Ghidra RE of both radar and stock ESP32 firmware.
+- ~~Fall detection~~ — Implemented via **0x0121** direct from FW2 (verified
+  2026-04-23 — previously mis-attributed to 0x0155 or 0x0306, both wrong).
 - ~~Sleep monitoring~~ — Fully implemented: state, presence, heart rate,
-  respiration, heart rate deviation. Sleep data (0x0159) is 3x IEEE 754 LE floats.
+  respiration, heart rate deviation. Sleep data (0x0159) is a **12-byte
+  BLOB2 of direct u8 fields** (tid, HR, BR, conf, state, stage, event),
+  **NOT** IEEE 754 floats as earlier docs claimed. Verified 2026-04-22
+  via decompile of `vitals_hr_br_emitter @ 0x00006c84`.
 - ~~Posture reporting~~ — Implemented per-zone (standing/sitting/lying).
 - ~~Real-time people count~~ — Implemented via 0x0164, 0x0165, 0x0166.
 - ~~Walking distance~~ — Implemented via 0x0174 (centimetres, divided by 100).
