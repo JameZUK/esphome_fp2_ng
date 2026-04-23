@@ -592,10 +592,19 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::CLOSING_SETTING, (uint8_t) 1);
     enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE, (uint16_t) 0x0001);
     enqueue_command_(OpCode::WRITE, AttrId::FALL_SENSITIVITY, fall_detection_sensitivity_);
-    enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_COUNT_REPORT_ENABLE, true); // BOOL
-    enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, true); // BOOL
-    enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, true); // BOOL
-    enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, true); // BOOL
+    // Critical: these four "report_enable" BOOLs are misleadingly named —
+    // setting them to TRUE switches the radar into an alternate "people
+    // counting" output format that SUPPRESSES the standard 0x0103/0x0104
+    // global motion/presence stream. Stock Aqara sends them all FALSE
+    // (captured in upstream PROTOCOL decoded_conf_zone.txt at Seq 11-13 —
+    // presence/motion emissions begin immediately after the FALSE write).
+    // Verified 2026-04-23: forcing these to FALSE restores normal
+    // 0x0103/0x0104/0x0155 emissions in Zone Detection. Setting to TRUE
+    // made them silent while only 0x0117 target tracking flowed.
+    enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_COUNT_REPORT_ENABLE, false); // BOOL
+    enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, false);       // BOOL
+    enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, false);         // BOOL
+    enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, false);      // BOOL
     // SLEEP_REPORT_ENABLE is sent LAST — see end of init sequence.
     // A READ in the 0x01xx range triggers scene mode 3, which clears sleep_report_enable.
     //
