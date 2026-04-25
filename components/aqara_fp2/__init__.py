@@ -320,6 +320,7 @@ CONFIG_SCHEMA = (
             cv.Optional("entry_exit_grid_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
             cv.Optional("interference_grid_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
             cv.Optional("mounting_position_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
+            cv.Optional("orientation_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
 
             cv.Optional(CONF_GLOBAL_ZONE): ZONE_BASE_SCHEMA,
             cv.Optional(CONF_ZONES): cv.ensure_list(ZONE_SCHEMA),
@@ -416,6 +417,7 @@ SENSOR_MAP = {
     "entry_exit_grid_sensor": (text_sensor_.new_text_sensor, "set_entry_exit_grid_sensor"),
     "interference_grid_sensor": (text_sensor_.new_text_sensor, "set_interference_grid_sensor"),
     "mounting_position_sensor": (text_sensor_.new_text_sensor, "set_mounting_position_sensor"),
+    "orientation_sensor": (text_sensor_.new_text_sensor, "set_orientation_sensor"),
 }
 
 ZONE_SENSOR_MAP = {

@@ -487,6 +487,16 @@ void FP2Component::loop() {
   check_initialization_();
   process_command_queue_();
   check_sleep_quiet_timeout_();
+  publish_orientation_if_changed_();
+}
+
+void FP2Component::publish_orientation_if_changed_() {
+  if (orientation_sensor_ == nullptr || fp2_accel_ == nullptr) return;
+  uint8_t now = (uint8_t) fp2_accel_->get_orientation();
+  if (now == last_published_orientation_) return;
+  last_published_orientation_ = now;
+  orientation_sensor_->publish_state(
+      orientation_to_string((aqara_fp2_accel::Orientation) now));
 }
 
 void FP2Component::check_sleep_quiet_timeout_() {
@@ -1965,8 +1975,16 @@ void FP2Component::handle_reverse_read_request_(AttrId attr_id) {
 
   switch (attr_id) {
     case AttrId::DEVICE_DIRECTION:  // device_direction
-      send_reverse_response_(attr_id, (uint8_t)fp2_accel_->get_orientation());
-      ESP_LOGV(TAG, "Sending Device Direction: %d", fp2_accel_->get_orientation());
+      {
+        auto orient = fp2_accel_->get_orientation();
+        send_reverse_response_(attr_id, (uint8_t) orient);
+        // Promoted to INFO 2026-04-25: this is the value FW1/FW2/FW3
+        // use to configure their coordinate system. Wrong orientation
+        // can silently break Fall + Positioning's 3D people-counting
+        // pipeline (no 0x0117 target frames despite a tracked target).
+        ESP_LOGI(TAG, "Device Direction reported: %d (%s)",
+                 (int) orient, orientation_to_string(orient));
+      }
       break;
 
     case AttrId::ANGLE_SENSOR_DATA:  // angle_sensor_data

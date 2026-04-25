@@ -501,6 +501,13 @@ public:
       mounting_position_sensor_->publish_state(pos_str);
     }
   }
+  // Live accel-derived orientation (independent of YAML mounting_position).
+  // This is the value we send to the radar in response to its 0x0143
+  // DEVICE_DIRECTION reverse-read query. Wrong orientation can break Fall +
+  // Positioning's 3D people-counting pipeline. Updated on change in loop().
+  void set_orientation_sensor(text_sensor::TextSensor *sensor) {
+    orientation_sensor_ = sensor;
+  }
   void set_radar_state_sensor(text_sensor::TextSensor *sensor) {
       radar_state_sensor_ = sensor;
   }
@@ -581,6 +588,7 @@ protected:
   // state entirely once GTrack releases the track, so we need to infer
   // "room empty" from radar silence.
   void check_sleep_quiet_timeout_();
+  void publish_orientation_if_changed_();
   static constexpr uint32_t SLEEP_QUIET_TIMEOUT_MS_ = 60000U;   // 60 s
 
   aqara_fp2_accel::AqaraFP2Accel *fp2_accel_{nullptr};
@@ -682,6 +690,8 @@ protected:
   text_sensor::TextSensor *entry_exit_grid_sensor_{nullptr};
   text_sensor::TextSensor *interference_grid_sensor_{nullptr};
   text_sensor::TextSensor *mounting_position_sensor_{nullptr};
+  text_sensor::TextSensor *orientation_sensor_{nullptr};
+  uint8_t last_published_orientation_{0xFF};  // sentinel ≠ any valid value
 
   text_sensor::TextSensor *radar_state_sensor_{nullptr};
   sensor::Sensor *radar_temperature_sensor_{nullptr};
